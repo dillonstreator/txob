@@ -86,7 +86,7 @@ export const processEvents = async <OutboxEventType extends string>(
         }
         if (unlockedEvent.errors >= opts.maxErrors) {
             // TODO: log potential issue with client configuration on finding unprocessed events
-            return;
+            continue;
         }
 
         const lockedEvent = await client.getEventByIdForUpdateSkipLocked(
