@@ -1,0 +1,42 @@
+{
+  "name": "txob",
+  "description": "generic transactional outbox event processor",
+  "keywords": ["DDD", "transactional outbox pattern", "event processor"],
+  "author": "Dillon Streator <github.com/dillonstreator>",
+  "homepage": "https://github.com/dillonstreator/txob",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/dillonstreator/txob.git"
+  },
+  "version": "0.0.1",
+  "license": "MIT",
+  "files": ["dist", "README.md"],
+  "main": "dist/processor.js",
+  "types": "dist/processor.d.ts",
+  "exports": {
+    ".": {
+      "default": "./dist/processor.js",
+      "types": "./dist/processor.d.ts"
+    },
+    "./pg/client": {
+      "default": "./dist/pg/client.js",
+      "types": "./dist/pg/client.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "prepublish": "yarn build"
+  },
+  "dependencies": {
+    "pg": "^8.11.3",
+    "retry": "^0.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.4",
+    "@types/pg": "^8.10.9",
+    "@types/retry": "^0.12.5",
+    "nodemon": "^3.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
