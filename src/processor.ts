@@ -82,6 +82,10 @@ export const processEvents = async <OutboxEventType extends string>(
         if (opts.signal?.aborted) {
             return;
         }
+        if (unlockedEvent.errors >= opts.maxErrors) {
+            // TODO: log potential issue with client configuration on finding unprocessed events
+            return;
+        }
 
         const lockedEvent = await client.getEventByIdForUpdateSkipLocked(
             unlockedEvent.id,
@@ -112,7 +116,7 @@ export const processEvents = async <OutboxEventType extends string>(
                     handlerResults.errors ??= [];
 
                     try {
-                        await handler(lockedEvent, opts);
+                        await handler(lockedEvent, { signal: opts.signal });
                         handlerResults.processed_at = new Date();
                     } catch (error) {
                         errored = true;
@@ -141,6 +145,9 @@ export const processEvents = async <OutboxEventType extends string>(
             lockedEvent.processed_at = new Date();
         }
 
+        // The success of this update is crucial for the processor flow.
+        // In the event of a failure, any handlers that have successfully executed
+        // during this processor tick will be reinvoked in the subsequent tick.
         await retryable(() => client.updateEvent(lockedEvent), {
             retries: 3,
             factor: 2,
