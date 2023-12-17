@@ -1,4 +1,6 @@
 import retry from 'retry';
+import { retryable } from './retry';
+import { getDate } from './date';
 
 type OutboxEventHandlerResult = {
     processed_at?: Date;
@@ -117,12 +119,12 @@ export const processEvents = async <OutboxEventType extends string>(
 
                     try {
                         await handler(lockedEvent, { signal: opts.signal });
-                        handlerResults.processed_at = new Date();
+                        handlerResults.processed_at = getDate();
                     } catch (error) {
                         errored = true;
                         handlerResults.errors?.push({
                             error: (error as Error)?.message ?? error,
-                            timestamp: new Date(),
+                            timestamp: getDate(),
                         });
                     }
 
@@ -142,7 +144,7 @@ export const processEvents = async <OutboxEventType extends string>(
             }
         } else {
             lockedEvent.backoff_until = null;
-            lockedEvent.processed_at = new Date();
+            lockedEvent.processed_at = getDate();
         }
 
         // The success of this update is crucial for the processor flow.
@@ -158,20 +160,3 @@ export const processEvents = async <OutboxEventType extends string>(
         });
     }
 };
-
-export function retryable<T>(
-    action: () => Promise<T>,
-    options?: retry.OperationOptions
-): Promise<T> {
-    return new Promise((resolve, reject) => {
-        const op = retry.operation(options);
-
-        op.attempt(async () => {
-            try {
-                resolve(await action());
-            } catch (err) {
-                if (!op.retry(err as Error)) reject(err);
-            }
-        });
-    });
-}

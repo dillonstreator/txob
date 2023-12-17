@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { OutboxEvent, processEvents } from './processor';
 
 const mockClient = {
@@ -7,9 +7,15 @@ const mockClient = {
     updateEvent: vi.fn(),
 };
 
-beforeEach(() => {
-    vi.useFakeTimers();
+const now = new Date();
+vi.mock('./date', async (getOg) => {
+    const mod = await getOg();
+    return {
+        ...(mod as Object),
+        getDate: vi.fn(() => now),
+    };
 });
+
 afterEach(() => {
     vi.clearAllMocks();
 });
@@ -18,7 +24,7 @@ describe('processEvents', () => {
     it('does nothing when no events to process', () => {
         const opts = {
             maxErrors: 5,
-            backoff: () => new Date(),
+            backoff: () => now,
         };
         const handlerMap = {};
         mockClient.getUnprocessedEvents.mockImplementation(() => []);
@@ -32,12 +38,13 @@ describe('processEvents', () => {
     });
 
     it('handles handler results and updates', async () => {
-        const date = new Date();
-        vi.setSystemTime(date);
-
         const opts = {
             maxErrors: 5,
             backoff: vi.fn(),
+            retry: {
+                minTimeout: 50,
+                maxTimeout: 100,
+            },
         };
         const err = new Error('some error');
         const handlerMap = {
@@ -50,15 +57,15 @@ describe('processEvents', () => {
         const evt1: OutboxEvent<keyof typeof handlerMap> = {
             type: 'evtType1',
             id: '1',
-            timestamp: new Date(),
+            timestamp: now,
             data: {},
-            correlation_id: '',
+            correlation_id: 'abc123',
             handler_results: {
                 handler1: {
-                    errors: [{ error: err.message, timestamp: new Date() }],
+                    errors: [{ error: err.message, timestamp: now }],
                 },
                 handler3: {
-                    processed_at: new Date(),
+                    processed_at: now,
                 },
             },
             errors: 0,
@@ -68,6 +75,12 @@ describe('processEvents', () => {
         mockClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) =>
             events.find((e) => e.id === id)
         );
+        let updateEventCalls = 0;
+        mockClient.updateEvent.mockImplementation(() => {
+            updateEventCalls++;
+            if (updateEventCalls <= 1) return Promise.reject('some error');
+            else return Promise.resolve();
+        });
 
         await processEvents(mockClient, handlerMap, opts);
 
@@ -91,10 +104,10 @@ describe('processEvents', () => {
         expect(opts.backoff).toHaveBeenCalledOnce();
         expect(opts.backoff).toHaveBeenCalledWith(1); // evt.errors + 1
 
-        expect(mockClient.updateEvent).toHaveBeenCalledOnce();
+        expect(mockClient.updateEvent).toHaveBeenCalledTimes(2);
         expect(mockClient.updateEvent).toHaveBeenCalledWith({
             backoff_until: undefined,
-            correlation_id: '',
+            correlation_id: 'abc123',
             data: {},
             errors: 1,
             handler_results: {
@@ -102,25 +115,25 @@ describe('processEvents', () => {
                     errors: [
                         {
                             error: err.message,
-                            timestamp: date,
+                            timestamp: now,
                         },
                     ],
-                    processed_at: date,
+                    processed_at: now,
                 },
                 handler2: {
                     errors: [
                         {
                             error: err.message,
-                            timestamp: date,
+                            timestamp: now,
                         },
                     ],
                 },
                 handler3: {
-                    processed_at: date,
+                    processed_at: now,
                 },
             },
             id: '1',
-            timestamp: date,
+            timestamp: now,
             type: 'evtType1',
         });
     });
