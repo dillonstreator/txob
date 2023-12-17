@@ -1,12 +1,12 @@
 import { Client } from 'pg';
-import { OutboxEvent, OutboxProcessorClient } from '../processor';
+import { TxOBEvent, TxOBProcessorClient } from '../processor';
 
 export const createEventProcessorClient = <EventType extends string>(
     pgClient: Client
-): OutboxProcessorClient<EventType> => ({
+): TxOBProcessorClient<EventType> => ({
     getUnprocessedEvents: async (opts) => {
         const events = await pgClient.query<
-            Pick<OutboxEvent<EventType>, 'id' | 'errors'>
+            Pick<TxOBEvent<EventType>, 'id' | 'errors'>
         >(
             'SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
             [opts.maxErrors]
@@ -14,7 +14,7 @@ export const createEventProcessorClient = <EventType extends string>(
         return events.rows;
     },
     getEventByIdForUpdateSkipLocked: async (eventId) => {
-        const event = await pgClient.query<OutboxEvent<EventType>>(
+        const event = await pgClient.query<TxOBEvent<EventType>>(
             `SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED`,
             [eventId]
         );
