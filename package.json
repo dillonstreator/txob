@@ -1,16 +1,24 @@
 {
   "name": "txob",
   "description": "generic transactional outbox event processor",
-  "keywords": ["DDD", "transactional outbox pattern", "event processor"],
-  "author": "Dillon Streator <github.com/dillonstreator>",
+  "keywords": [
+    "DDD",
+    "outbox pattern",
+    "transactional outbox",
+    "event processor"
+  ],
+  "author": "Dillon Streator <dillonstreator@gmail.com>",
   "homepage": "https://github.com/dillonstreator/txob",
   "repository": {
     "type": "git",
     "url": "git://github.com/dillonstreator/txob.git"
   },
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "dist/processor.js",
   "types": "dist/processor.d.ts",
   "exports": {
@@ -18,14 +26,17 @@
       "default": "./dist/processor.js",
       "types": "./dist/processor.d.ts"
     },
-    "./pg/client": {
+    "./pg": {
       "default": "./dist/pg/client.js",
       "types": "./dist/pg/client.d.ts"
     }
   },
   "scripts": {
-    "build": "tsc --build",
-    "prepublish": "yarn build"
+    "build": "npm-run-all clean build:tsc",
+    "build:tsc": "tsc --build",
+    "prepublish": "yarn build",
+    "clean": "rimraf dist",
+    "nuke": "rimraf node_modules dist"
   },
   "dependencies": {
     "pg": "^8.11.3",
@@ -36,6 +47,8 @@
     "@types/pg": "^8.10.9",
     "@types/retry": "^0.12.5",
     "nodemon": "^3.0.2",
+    "npm-run-all": "^4.1.5",
+    "rimraf": "^5.0.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }

@@ -1,3 +1,3 @@
 # txob
 
-customizable generic transactional outbox event processor
+generic transactional outbox event processor
