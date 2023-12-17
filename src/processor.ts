@@ -1,5 +1,4 @@
-import retry from 'retry';
-import { retryable } from './retry';
+import { retryable, RetryOpts } from './retry';
 import { getDate } from './date';
 
 type TxOBEventHandlerResult = {
@@ -63,7 +62,7 @@ const defaultMaxErrors = 5;
 type TxOBProcessEventsOpts = {
     maxErrors: number;
     backoff: (count: number) => Date;
-    retry?: retry.OperationOptions;
+    retryOpts?: RetryOpts;
     signal?: AbortSignal;
 };
 
@@ -89,6 +88,7 @@ export const processEvents = async <TxOBEventType extends string>(
         }
         if (unlockedEvent.errors >= _opts.maxErrors) {
             // TODO: log potential issue with client configuration on finding unprocessed events
+            // events that have reached the maximum allowed errors should not be returned from `getUnprocessedEvents`
             continue;
         }
 
@@ -156,10 +156,10 @@ export const processEvents = async <TxOBEventType extends string>(
         await retryable(() => client.updateEvent(lockedEvent), {
             retries: 3,
             factor: 2,
-            minTimeout: 250,
+            minTimeout: 100,
             maxTimeout: 2500,
             randomize: true,
-            ...(_opts.retry ?? {}),
+            ...(_opts.retryOpts ?? {}),
         });
     }
 };

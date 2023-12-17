@@ -1,11 +1,13 @@
 import retry from 'retry';
 
+export type RetryOpts = retry.OperationOptions;
+
 export const retryable = <T>(
     action: () => Promise<T>,
-    options?: retry.OperationOptions
+    opts?: RetryOpts
 ): Promise<T> => {
     return new Promise((resolve, reject) => {
-        const op = retry.operation(options);
+        const op = retry.operation(opts);
 
         op.attempt(async () => {
             try {
