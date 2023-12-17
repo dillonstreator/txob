@@ -14,7 +14,7 @@ describe('createEventProcessorClient', () => {
 });
 
 describe('getUnprocessedEvents', () => {
-    it('should execute the correct query', () => {
+    it('should execute the correct query', async () => {
         const rows = [1, 2, 3];
         const pgClient = {
             query: vi.fn<any, any>(() =>
@@ -27,33 +27,63 @@ describe('getUnprocessedEvents', () => {
             maxErrors: 10,
         };
         const client = createEventProcessorClient(pgClient);
-        client.getUnprocessedEvents(opts);
+        const result = await client.getUnprocessedEvents(opts);
         expect(pgClient.query).toHaveBeenCalledOnce();
         expect(pgClient.query).toHaveBeenCalledWith(
             'SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
             [opts.maxErrors]
         );
+        expect(result).toBe(rows);
     });
 });
 
 describe('getEventByIdForUpdateSkipLocked', () => {
-    it('should execute the correct query', () => {
+    it('should execute the correct query', async () => {
         const rows = [1, 2, 3];
         const pgClient = {
             query: vi.fn<any, any>(() =>
                 Promise.resolve({
                     rows,
+                    rowCount: rows.length,
                 })
             ),
         };
         const eventId = '123';
         const client = createEventProcessorClient(pgClient);
-        client.getEventByIdForUpdateSkipLocked(eventId, {});
+        const result = await client.getEventByIdForUpdateSkipLocked(
+            eventId,
+            {}
+        );
         expect(pgClient.query).toHaveBeenCalledOnce();
         expect(pgClient.query).toHaveBeenCalledWith(
             'SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED',
             [eventId]
         );
+        expect(result).toBe(1);
+    });
+
+    it('should return null on no rows', async () => {
+        const rows = [];
+        const pgClient = {
+            query: vi.fn<any, any>(() =>
+                Promise.resolve({
+                    rows,
+                    rowCount: rows.length,
+                })
+            ),
+        };
+        const eventId = '123';
+        const client = createEventProcessorClient(pgClient);
+        const result = await client.getEventByIdForUpdateSkipLocked(
+            eventId,
+            {}
+        );
+        expect(pgClient.query).toHaveBeenCalledOnce();
+        expect(pgClient.query).toHaveBeenCalledWith(
+            'SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED',
+            [eventId]
+        );
+        expect(result).toBeNull();
     });
 });
 

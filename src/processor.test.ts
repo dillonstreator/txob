@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { OutboxEvent, processEvents } from './processor';
+import { TxOBEvent, processEvents } from './processor';
 
 const mockClient = {
     getUnprocessedEvents: vi.fn(),
@@ -54,7 +54,7 @@ describe('processEvents', () => {
                 handler3: vi.fn(() => Promise.resolve()),
             },
         };
-        const evt1: OutboxEvent<keyof typeof handlerMap> = {
+        const evt1: TxOBEvent<keyof typeof handlerMap> = {
             type: 'evtType1',
             id: '1',
             timestamp: now,
