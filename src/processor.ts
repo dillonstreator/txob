@@ -42,7 +42,7 @@ type OutboxProcessorClientOpts = {
 export interface OutboxProcessorClient<OutboxEventType extends string> {
     getUnprocessedEvents(
         opts: OutboxProcessorClientOpts & { maxErrors: number }
-    ): Promise<OutboxEvent<OutboxEventType>[]>;
+    ): Promise<Pick<OutboxEvent<OutboxEventType>, 'id' | 'errors'>[]>;
     getEventByIdForUpdateSkipLocked(
         eventId: OutboxEvent<OutboxEventType>['id'],
         opts: OutboxProcessorClientOpts

@@ -4,16 +4,16 @@ import { OutboxEvent, OutboxProcessorClient } from '../processor';
 export const createEventProcessorClient = <EventType extends string>(
     pgClient: Client
 ): OutboxProcessorClient<EventType> => ({
-    getUnprocessedEvents: async (opts): Promise<OutboxEvent<EventType>[]> => {
-        const events = await pgClient.query<OutboxEvent<EventType>>(
-            'SELECT * FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
+    getUnprocessedEvents: async (opts) => {
+        const events = await pgClient.query<
+            Pick<OutboxEvent<EventType>, 'id' | 'errors'>
+        >(
+            'SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
             [opts.maxErrors]
         );
         return events.rows;
     },
-    getEventByIdForUpdateSkipLocked: async (
-        eventId
-    ): Promise<OutboxEvent<EventType> | null> => {
+    getEventByIdForUpdateSkipLocked: async (eventId) => {
         const event = await pgClient.query<OutboxEvent<EventType>>(
             `SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED`,
             [eventId]
@@ -24,7 +24,7 @@ export const createEventProcessorClient = <EventType extends string>(
 
         return event.rows[0];
     },
-    updateEvent: async (event: OutboxEvent<EventType>): Promise<void> => {
+    updateEvent: async (event) => {
         await pgClient.query(
             `UPDATE events SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
             [
