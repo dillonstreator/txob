@@ -17,3 +17,14 @@
     <img alt="" src="https://www.codefactor.io/repository/github/dillonstreator/txob/badge">
   </a>
 </p>
+
+
+## Installation
+
+```sh
+npm install txob
+```
+
+## Usage
+
+[examples](./examples)
