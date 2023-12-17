@@ -37,7 +37,8 @@
     "prepublish": "yarn build",
     "clean": "rimraf dist",
     "nuke": "rimraf node_modules dist",
-    "test": "vitest"
+    "test": "vitest",
+    "test:ci": "vitest --run --coverage"
   },
   "dependencies": {
     "pg": "^8.11.3",
