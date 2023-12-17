@@ -23,6 +23,10 @@ jobs:
     - name: Install dependencies
       run: yarn install
 
+    - name: Remove example dir
+      run: |
+        rm -rf example
+
     - name: Run the tests
       run: yarn test:ci
 
