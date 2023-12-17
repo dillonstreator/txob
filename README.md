@@ -5,7 +5,7 @@
     <img src="https://codecov.io/gh/dillonstreator/txob/graph/badge.svg?token=E9M7G67VLL"/>
   </a>
   <a aria-label="NPM version" href="https://www.npmjs.com/package/txob">
-    <img alt="" src="https://badgen.net/npm/v/txob?t=1702844119">
+    <img alt="" src="https://badgen.net/npm/v/txob?t=1702854739">
   </a>
   <a aria-label="License" href="https://github.com/dillonstreator/txob/blob/main/LICENSE">
     <img alt="" src="https://badgen.net/npm/license/txob">
