@@ -7,8 +7,7 @@
     "dev": "nodemon index.ts"
   },
   "dependencies": {
-    "pg": "^8.11.3",
-    "txob": "^0.0.5"
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "@types/node": "^20.10.4",

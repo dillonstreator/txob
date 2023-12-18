@@ -420,11 +420,6 @@ readdirp@~3.6.0:
   dependencies:
     picomatch "^2.2.1"
 
-retry@^0.13.1:
-  version "0.13.1"
-  resolved "https://registry.yarnpkg.com/retry/-/retry-0.13.1.tgz#185b1587acf67919d63b357349e03537b2484658"
-  integrity sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg==
-
 semver@^7.5.3:
   version "7.5.4"
   resolved "https://registry.yarnpkg.com/semver/-/semver-7.5.4.tgz#483986ec4ed38e1c6c48c34894a9182dbff68a6e"
@@ -483,13 +478,6 @@ ts-node@^10.9.2:
     make-error "^1.1.1"
     v8-compile-cache-lib "^3.0.1"
     yn "3.1.1"
-
-txob@^0.0.5:
-  version "0.0.5"
-  resolved "https://registry.yarnpkg.com/txob/-/txob-0.0.5.tgz#36092a25f862af84cf3347dbb7e48a1794d7d08c"
-  integrity sha512-UICvMTT2eLMm0vc1NmsZDS3hNL9nhV7XiMqKfSo8RfLGujjrljjCtoTGV2oRk9pwnPUNOjh7pybJHpzrXsDMfw==
-  dependencies:
-    retry "^0.13.1"
 
 typescript@^5.3.3:
   version "5.3.3"

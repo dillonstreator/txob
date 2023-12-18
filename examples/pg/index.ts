@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { processEvents } from 'txob';
-import { createEventProcessorClient } from 'txob/pg';
+import { processEvents } from '../../src/processor';
+import { createProcessorClient } from '../../src/pg/client';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -42,7 +42,7 @@ const main = async () => {
 
     const ab = new AbortController();
 
-    const processorClient = createEventProcessorClient<EventType>(client);
+    const processorClient = createProcessorClient<EventType>(client);
 
     const processorTick = () => {
         if (ab.signal.aborted) return;
