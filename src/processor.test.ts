@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { TxOBEvent, processEvents } from './processor';
 
-const mockClient = {
-    getUnprocessedEvents: vi.fn(),
+const mockTxClient = {
     getEventByIdForUpdateSkipLocked: vi.fn(),
     updateEvent: vi.fn(),
+}
+const mockClient = {
+    getUnprocessedEvents: vi.fn(),
+    transaction: vi.fn(async (fn) => (
+        fn(mockTxClient)
+    ))
 };
 
 const now = new Date();
@@ -31,10 +36,11 @@ describe('processEvents', () => {
         processEvents(mockClient, handlerMap, opts);
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
+        expect(mockClient.transaction).not.toHaveBeenCalled();
         expect(
-            mockClient.getEventByIdForUpdateSkipLocked
+            mockTxClient.getEventByIdForUpdateSkipLocked
         ).not.toHaveBeenCalled();
-        expect(mockClient.updateEvent).not.toHaveBeenCalled();
+        expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
     });
 
     it('handles handler results and updates', async () => {
@@ -94,13 +100,13 @@ describe('processEvents', () => {
         };
         const events = [evt1, evt2, evt3];
         mockClient.getUnprocessedEvents.mockImplementation(() => events);
-        mockClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+        mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
             if (id === evt3.id) return null;
 
             return events.find((e) => e.id === id);
         });
         let updateEventCalls = 0;
-        mockClient.updateEvent.mockImplementation(() => {
+        mockTxClient.updateEvent.mockImplementation(() => {
             updateEventCalls++;
             if (updateEventCalls <= 1) return Promise.reject('some error');
             else return Promise.resolve();
@@ -110,6 +116,8 @@ describe('processEvents', () => {
 
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
+
+        expect(mockClient.transaction).toHaveBeenCalledTimes(2);
 
         expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
         expect(handlerMap.evtType1.handler1).toHaveBeenCalledWith(evt1, {
@@ -122,14 +130,14 @@ describe('processEvents', () => {
         expect(handlerMap.evtType1.handler3).not.toHaveBeenCalled();
 
         expect(
-            mockClient.getEventByIdForUpdateSkipLocked
+            mockTxClient.getEventByIdForUpdateSkipLocked
         ).toHaveBeenCalledTimes(2);
 
         expect(opts.backoff).toHaveBeenCalledOnce();
         expect(opts.backoff).toHaveBeenCalledWith(5); // evt.errors + 1
 
-        expect(mockClient.updateEvent).toHaveBeenCalledTimes(2);
-        expect(mockClient.updateEvent).toHaveBeenCalledWith({
+        expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(2);
+        expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
             backoff_until: null,
             correlation_id: 'abc123',
             data: {},
@@ -192,10 +200,10 @@ describe('processEvents', () => {
         };
         const events = [evt1];
         mockClient.getUnprocessedEvents.mockImplementation(() => events);
-        mockClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+        mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
             return events.find((e) => e.id === id);
         });
-        mockClient.updateEvent.mockImplementation(() => {
+        mockTxClient.updateEvent.mockImplementation(() => {
             return Promise.resolve();
         });
 
@@ -204,16 +212,18 @@ describe('processEvents', () => {
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
         expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
 
+        expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+        
         expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
         expect(handlerMap.evtType1.handler1).toHaveBeenCalledWith(evt1, {
             signal: undefined,
         });
         expect(
-            mockClient.getEventByIdForUpdateSkipLocked
+            mockTxClient.getEventByIdForUpdateSkipLocked
         ).toHaveBeenCalledTimes(1);
 
-        expect(mockClient.updateEvent).toHaveBeenCalledTimes(1);
-        expect(mockClient.updateEvent).toHaveBeenCalledWith({
+        expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
+        expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
             backoff_until: null,
             correlation_id: 'abc123',
             data: {},
