@@ -23,7 +23,7 @@ export const createProcessorClient = <EventType extends string>(
       await fn({
         getEventByIdForUpdateSkipLocked: async (eventId) => {
           const event = await querier.query<TxOBEvent<EventType>>(
-            `SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED`,
+            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED`,
             [eventId]
           );
           if (event.rowCount === 0) {

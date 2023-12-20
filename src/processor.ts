@@ -72,6 +72,7 @@ type TxOBProcessEventsOpts = {
   backoff: (count: number) => Date;
   retryOpts?: RetryOpts;
   signal?: AbortSignal;
+  logger?: Logger;
 };
 
 export const processEvents = async <TxOBEventType extends string>(
@@ -90,13 +91,16 @@ export const processEvents = async <TxOBEventType extends string>(
     return;
   }
 
+  _opts.logger?.debug(`found ${events.length} events to process`);
+
   for (const unlockedEvent of events) {
     if (_opts.signal?.aborted) {
       return;
     }
     if (unlockedEvent.errors >= _opts.maxErrors) {
-      // TODO: log potential issue with client configuration on finding unprocessed events
-      // events that have reached the maximum allowed errors should not be returned from `getUnprocessedEvents`
+      // Potential issue with client configuration on finding unprocessed events
+      // Events with maximum allowed errors should not be returned from `getUnprocessedEvents`
+      _opts.logger?.warn('unexpected event with max errors returned from `getUnprocessedEvents`', { eventId: unlockedEvent.id, errors: unlockedEvent.errors, maxErrors: _opts.maxErrors });
       continue;
     }
 
@@ -104,9 +108,10 @@ export const processEvents = async <TxOBEventType extends string>(
       await client.transaction(async (txClient) => {
         const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
           unlockedEvent.id,
-          _opts
+          { signal: _opts.signal },
         );
         if (!lockedEvent) {
+          _opts.logger?.debug('skipping locked event', { eventId: unlockedEvent.id })
           return;
         }
 
@@ -114,6 +119,7 @@ export const processEvents = async <TxOBEventType extends string>(
 
         let eventHandlerMap = handlerMap[lockedEvent.type];
         if (!eventHandlerMap) {
+          _opts.logger?.warn('missing event handler map', { type: lockedEvent.type });
           errored = true;
           lockedEvent.errors = _opts.maxErrors;
           eventHandlerMap = {};
@@ -125,6 +131,7 @@ export const processEvents = async <TxOBEventType extends string>(
               const handlerResults =
                 lockedEvent.handler_results[handlerName] ?? {};
               if (handlerResults.processed_at) {
+                _opts.logger?.debug('handler already processed', { eventId: lockedEvent.id, handlerName });
                 return;
               }
 
@@ -133,7 +140,9 @@ export const processEvents = async <TxOBEventType extends string>(
               try {
                 await handler(lockedEvent, { signal: _opts.signal });
                 handlerResults.processed_at = getDate();
+                _opts.logger?.debug('handler succeeded', { eventId: lockedEvent.id, handlerName });
               } catch (error) {
+                _opts.logger?.error('handler errored', { eventId: lockedEvent.id, handlerName, error });
                 errored = true;
                 handlerResults.errors?.push({
                   error: (error as Error)?.message ?? error,
@@ -160,9 +169,11 @@ export const processEvents = async <TxOBEventType extends string>(
           lockedEvent.processed_at = getDate();
         }
 
+        _opts.logger?.debug('updating event', { errored, lockedEvent });
+
         // The success of this update is crucial for the processor flow.
         // In the event of a failure, any handlers that have successfully executed
-        // during this processor tick will be reinvoked in the subsequent tick.
+        // during this invokation will be reinvoked in the subsequent call.
         await retryable(() => txClient.updateEvent(lockedEvent), {
           retries: 3,
           factor: 2,
@@ -173,7 +184,14 @@ export const processEvents = async <TxOBEventType extends string>(
         });
       });
     } catch (error) {
-      // TODO: log error?
+      _opts.logger?.error('error processing event', { eventId: unlockedEvent.id, error });
     }
   }
 };
+
+export interface Logger {
+  debug(message?: any, ...optionalParams: any[]): void;
+  info(message?: any, ...optionalParams: any[]): void;
+  warn(message?: any, ...optionalParams: any[]): void;
+  error(message?: any, ...optionalParams: any[]): void;
+}

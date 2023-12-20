@@ -82,7 +82,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
         [eventId]
       );
       expect(result).toBe(1);
@@ -107,7 +107,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT * FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
         [eventId]
       );
       expect(result).toBeNull();
