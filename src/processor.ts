@@ -114,6 +114,12 @@ export const processEvents = async <TxOBEventType extends string>(
           _opts.logger?.debug('skipping locked event', { eventId: unlockedEvent.id })
           return;
         }
+        if (lockedEvent.processed_at) {
+          // While unlikely, this is possible if a concurrent processor finished processing this event between the time
+          // that this processor found the event with `getUnprocessedEvents` and called `getEventByIdForUpdateSkipLocked`
+          _opts.logger?.debug('skipping already processed event', { eventId: lockedEvent.id })
+          return;
+        }
 
         let errored = false;
 
