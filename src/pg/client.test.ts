@@ -29,8 +29,8 @@ describe("getUnprocessedEvents", () => {
     const result = await client.getUnprocessedEvents(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
-      "SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
-      [opts.maxErrors],
+      "SELECT id, errors FROM $1 WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2",
+      ["events", opts.maxErrors],
     );
     expect(result).toBe(rows);
   });
@@ -82,8 +82,8 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
-        [eventId],
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM $1 WHERE id = $2 FOR UPDATE SKIP LOCKED",
+        ["events", eventId],
       );
       expect(result).toBe(1);
     });
@@ -107,8 +107,8 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
-        [eventId],
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM $1 WHERE id = $2 FOR UPDATE SKIP LOCKED",
+        ["events", eventId],
       );
       expect(result).toBeNull();
     });
@@ -144,8 +144,9 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "UPDATE events SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5",
+        "UPDATE $1 SET handler_results = $2, errors = $3, processed_at = $4, backoff_until = $5 WHERE id = $6",
         [
+          "events",
           event.handler_results,
           event.errors,
           event.processed_at,
