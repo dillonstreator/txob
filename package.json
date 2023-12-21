@@ -29,6 +29,10 @@
     "./pg": {
       "default": "./dist/pg/client.js",
       "types": "./dist/pg/client.d.ts"
+    },
+    "./mongodb": {
+      "default": "./dist/mongodb/client.js",
+      "types": "./dist/mongodb/client.d.ts"
     }
   },
   "scripts": {
@@ -44,15 +48,18 @@
     "retry": "^0.13.1"
   },
   "peerDependencies": {
+    "mongodb": "^6.0.0",
     "pg": "^8.0.0"
   },
   "devDependencies": {
+    "@types/mongodb": "^4.0.7",
     "@types/node": "^20.10.4",
     "@types/pg": "^8.10.9",
     "@types/retry": "^0.12.5",
     "@vitest/coverage-v8": "^1.0.4",
     "nodemon": "^3.0.2",
     "npm-run-all": "^4.1.5",
+    "prettier": "^3.1.1",
     "rimraf": "^5.0.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
