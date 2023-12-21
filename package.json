@@ -42,7 +42,8 @@
     "clean": "rimraf dist",
     "nuke": "rimraf node_modules dist",
     "test": "vitest",
-    "test:ci": "yarn test --run --coverage"
+    "test:ci": "yarn test --run --coverage",
+    "prettier": "prettier -w ."
   },
   "dependencies": {
     "retry": "^0.13.1"
