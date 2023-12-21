@@ -19,7 +19,7 @@ describe("getUnprocessedEvents", () => {
       query: vi.fn<any, any>(() =>
         Promise.resolve({
           rows,
-        })
+        }),
       ),
     };
     const opts = {
@@ -30,7 +30,7 @@ describe("getUnprocessedEvents", () => {
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
       "SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
-      [opts.maxErrors]
+      [opts.maxErrors],
     );
     expect(result).toBe(rows);
   });
@@ -70,7 +70,7 @@ describe("transaction", () => {
           Promise.resolve({
             rows,
             rowCount: rows.length,
-          })
+          }),
         ),
       };
       const eventId = "123";
@@ -83,7 +83,7 @@ describe("transaction", () => {
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
         "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
-        [eventId]
+        [eventId],
       );
       expect(result).toBe(1);
     });
@@ -95,7 +95,7 @@ describe("transaction", () => {
           Promise.resolve({
             rows,
             rowCount: rows.length,
-          })
+          }),
         ),
       };
       const eventId = "123";
@@ -108,7 +108,7 @@ describe("transaction", () => {
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
         "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED",
-        [eventId]
+        [eventId],
       );
       expect(result).toBeNull();
     });
@@ -121,7 +121,7 @@ describe("transaction", () => {
         query: vi.fn<any, any>(() =>
           Promise.resolve({
             rows,
-          })
+          }),
         ),
       };
       const event = {
@@ -151,7 +151,7 @@ describe("transaction", () => {
           event.processed_at,
           event.backoff_until,
           event.id,
-        ]
+        ],
       );
     });
   });

@@ -24,7 +24,7 @@ type TxOBEventHandlerOpts = {
 
 export type TxOBEventHandler = <TxOBEventType extends string>(
   event: TxOBEvent<TxOBEventType>,
-  opts: TxOBEventHandlerOpts
+  opts: TxOBEventHandlerOpts,
 ) => Promise<void>;
 
 export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
@@ -40,19 +40,19 @@ type TxOBProcessorClientOpts = {
 
 export interface TxOBProcessorClient<TxOBEventType extends string> {
   getUnprocessedEvents(
-    opts: TxOBProcessorClientOpts & { maxErrors: number }
+    opts: TxOBProcessorClientOpts & { maxErrors: number },
   ): Promise<Pick<TxOBEvent<TxOBEventType>, "id" | "errors">[]>;
   transaction(
     fn: (
-      txProcessorClient: TxOBTransactionProcessorClient<TxOBEventType>
-    ) => Promise<void>
+      txProcessorClient: TxOBTransactionProcessorClient<TxOBEventType>,
+    ) => Promise<void>,
   ): Promise<void>;
 }
 
 export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
   getEventByIdForUpdateSkipLocked(
     eventId: TxOBEvent<TxOBEventType>["id"],
-    opts: TxOBProcessorClientOpts
+    opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
   updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
 }
@@ -78,7 +78,7 @@ type TxOBProcessEventsOpts = {
 export const processEvents = async <TxOBEventType extends string>(
   client: TxOBProcessorClient<TxOBEventType>,
   handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-  opts?: Partial<TxOBProcessEventsOpts>
+  opts?: Partial<TxOBProcessEventsOpts>,
 ): Promise<void> => {
   const _opts: TxOBProcessEventsOpts = {
     maxErrors: defaultMaxErrors,
@@ -100,7 +100,14 @@ export const processEvents = async <TxOBEventType extends string>(
     if (unlockedEvent.errors >= _opts.maxErrors) {
       // Potential issue with client configuration on finding unprocessed events
       // Events with maximum allowed errors should not be returned from `getUnprocessedEvents`
-      _opts.logger?.warn('unexpected event with max errors returned from `getUnprocessedEvents`', { eventId: unlockedEvent.id, errors: unlockedEvent.errors, maxErrors: _opts.maxErrors });
+      _opts.logger?.warn(
+        "unexpected event with max errors returned from `getUnprocessedEvents`",
+        {
+          eventId: unlockedEvent.id,
+          errors: unlockedEvent.errors,
+          maxErrors: _opts.maxErrors,
+        },
+      );
       continue;
     }
 
@@ -111,13 +118,17 @@ export const processEvents = async <TxOBEventType extends string>(
           { signal: _opts.signal },
         );
         if (!lockedEvent) {
-          _opts.logger?.debug('skipping locked event', { eventId: unlockedEvent.id })
+          _opts.logger?.debug("skipping locked event", {
+            eventId: unlockedEvent.id,
+          });
           return;
         }
         if (lockedEvent.processed_at) {
           // While unlikely, this is possible if a concurrent processor finished processing this event between the time
           // that this processor found the event with `getUnprocessedEvents` and called `getEventByIdForUpdateSkipLocked`
-          _opts.logger?.debug('skipping already processed event', { eventId: lockedEvent.id })
+          _opts.logger?.debug("skipping already processed event", {
+            eventId: lockedEvent.id,
+          });
           return;
         }
 
@@ -125,7 +136,9 @@ export const processEvents = async <TxOBEventType extends string>(
 
         let eventHandlerMap = handlerMap[lockedEvent.type];
         if (!eventHandlerMap) {
-          _opts.logger?.warn('missing event handler map', { type: lockedEvent.type });
+          _opts.logger?.warn("missing event handler map", {
+            type: lockedEvent.type,
+          });
           errored = true;
           lockedEvent.errors = _opts.maxErrors;
           eventHandlerMap = {};
@@ -137,7 +150,10 @@ export const processEvents = async <TxOBEventType extends string>(
               const handlerResults =
                 lockedEvent.handler_results[handlerName] ?? {};
               if (handlerResults.processed_at) {
-                _opts.logger?.debug('handler already processed', { eventId: lockedEvent.id, handlerName });
+                _opts.logger?.debug("handler already processed", {
+                  eventId: lockedEvent.id,
+                  handlerName,
+                });
                 return;
               }
 
@@ -146,9 +162,16 @@ export const processEvents = async <TxOBEventType extends string>(
               try {
                 await handler(lockedEvent, { signal: _opts.signal });
                 handlerResults.processed_at = getDate();
-                _opts.logger?.debug('handler succeeded', { eventId: lockedEvent.id, handlerName });
+                _opts.logger?.debug("handler succeeded", {
+                  eventId: lockedEvent.id,
+                  handlerName,
+                });
               } catch (error) {
-                _opts.logger?.error('handler errored', { eventId: lockedEvent.id, handlerName, error });
+                _opts.logger?.error("handler errored", {
+                  eventId: lockedEvent.id,
+                  handlerName,
+                  error,
+                });
                 errored = true;
                 handlerResults.errors?.push({
                   error: (error as Error)?.message ?? error,
@@ -157,14 +180,14 @@ export const processEvents = async <TxOBEventType extends string>(
               }
 
               lockedEvent.handler_results[handlerName] = handlerResults;
-            }
-          )
+            },
+          ),
         );
 
         if (errored) {
           lockedEvent.errors = Math.min(
             lockedEvent.errors + 1,
-            _opts.maxErrors
+            _opts.maxErrors,
           );
           lockedEvent.backoff_until = _opts.backoff(lockedEvent.errors);
           if (lockedEvent.errors === _opts.maxErrors) {
@@ -175,7 +198,7 @@ export const processEvents = async <TxOBEventType extends string>(
           lockedEvent.processed_at = getDate();
         }
 
-        _opts.logger?.debug('updating event', { errored, lockedEvent });
+        _opts.logger?.debug("updating event", { errored, lockedEvent });
 
         // The success of this update is crucial for the processor flow.
         // In the event of a failure, any handlers that have successfully executed
@@ -190,7 +213,10 @@ export const processEvents = async <TxOBEventType extends string>(
         });
       });
     } catch (error) {
-      _opts.logger?.error('error processing event', { eventId: unlockedEvent.id, error });
+      _opts.logger?.error("error processing event", {
+        eventId: unlockedEvent.id,
+        error,
+      });
     }
   }
 };

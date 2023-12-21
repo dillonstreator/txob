@@ -6,14 +6,15 @@ interface Querier {
 }
 
 export const createProcessorClient = <EventType extends string>(
-  querier: Querier
+  querier: Querier,
+  table: string = "events",
 ): TxOBProcessorClient<EventType> => ({
   getUnprocessedEvents: async (opts) => {
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
-      "SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
-      [opts.maxErrors]
+      "SELECT id, errors FROM $1 WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2",
+      [table, opts.maxErrors],
     );
     return events.rows;
   },
@@ -23,8 +24,8 @@ export const createProcessorClient = <EventType extends string>(
       await fn({
         getEventByIdForUpdateSkipLocked: async (eventId) => {
           const event = await querier.query<TxOBEvent<EventType>>(
-            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 FOR UPDATE SKIP LOCKED`,
-            [eventId]
+            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM $1 WHERE id = $2 FOR UPDATE SKIP LOCKED`,
+            [table, eventId],
           );
           if (event.rowCount === 0) {
             return null;
@@ -34,14 +35,15 @@ export const createProcessorClient = <EventType extends string>(
         },
         updateEvent: async (event) => {
           await querier.query(
-            `UPDATE events SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
+            `UPDATE $1 SET handler_results = $2, errors = $3, processed_at = $4, backoff_until = $5 WHERE id = $6`,
             [
+              table,
               event.handler_results,
               event.errors,
               event.processed_at,
               event.backoff_until,
               event.id,
-            ]
+            ],
           );
         },
       });
