@@ -1,5 +1,6 @@
 import { retryable, RetryOpts } from "./retry";
 import { getDate } from "./date";
+import EventEmitter from "node:events";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -87,12 +88,9 @@ export const processEvents = async <TxOBEventType extends string>(
   };
 
   const events = await client.getUnprocessedEvents(_opts);
-  if (events.length === 0) {
-    return;
-  }
-
   _opts.logger?.debug(`found ${events.length} events to process`);
 
+  // TODO: consider concurrently processing events with max concurrency configuration
   for (const unlockedEvent of events) {
     if (_opts.signal?.aborted) {
       return;
@@ -144,6 +142,9 @@ export const processEvents = async <TxOBEventType extends string>(
           eventHandlerMap = {};
         }
 
+        _opts.logger?.debug(`processing event`, { eventId: lockedEvent.id });
+
+        // TODO: consider concurrently processing events handler with max concurrency configuration
         await Promise.allSettled(
           Object.entries(eventHandlerMap).map(
             async ([handlerName, handler]): Promise<void> => {
@@ -227,3 +228,141 @@ export interface Logger {
   warn(message?: any, ...optionalParams: any[]): void;
   error(message?: any, ...optionalParams: any[]): void;
 }
+
+export const EventProcessor = <TxOBEventType extends string>(
+  client: TxOBProcessorClient<TxOBEventType>,
+  handlerMap: TxOBEventHandlerMap<TxOBEventType>,
+  opts?: Omit<Partial<TxOBProcessEventsOpts>, "signal"> & {
+    sleepTimeMs?: number;
+  },
+) => {
+  return Processor(
+    ({ signal }) => {
+      return processEvents(client, handlerMap, {
+        ...opts,
+        signal,
+      });
+    },
+    {
+      sleepTimeMs: opts?.sleepTimeMs,
+      logger: opts?.logger,
+    },
+  );
+};
+
+class SignalAbortedError extends Error {
+  constructor() {
+    super("signal aborted while awaiting next processor tick");
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export const Processor = (
+  fn: ({ signal }: { signal: AbortSignal }) => Promise<void>,
+  opts?: { sleepTimeMs?: number; logger?: Logger },
+) => {
+  let state: "started" | "stopped" | "stopping" = "stopped";
+  const ee = new EventEmitter();
+  const ac = new AbortController();
+  let shutdownCompleteEmitted = false;
+  const _opts = {
+    sleepTimeMs: opts?.sleepTimeMs ?? 5000,
+  };
+
+  return {
+    start: () => {
+      if (state !== "stopped") {
+        opts?.logger?.warn(`cannot start processor from '${state}'`);
+        return;
+      }
+      state = "started";
+      opts?.logger?.debug("processor started");
+
+      let abortListener: ((this: AbortSignal, ev: Event) => any) | null = null;
+
+      (async () => {
+        while (true) {
+          opts?.logger?.debug("tick");
+          try {
+            await fn({ signal: ac.signal });
+
+            await Promise.race([
+              sleep(_opts.sleepTimeMs),
+              new Promise((_, reject) => {
+                if (ac.signal.aborted) return reject(new SignalAbortedError());
+
+                abortListener = () => reject(new SignalAbortedError());
+                ac.signal.addEventListener("abort", abortListener);
+              }),
+            ]);
+          } catch (error) {
+            if (error instanceof SignalAbortedError) {
+              opts?.logger?.debug(error.message);
+            } else {
+              opts?.logger?.error(error);
+            }
+
+            break;
+          } finally {
+            if (abortListener)
+              ac.signal.removeEventListener("abort", abortListener);
+          }
+        }
+
+        ee.emit("shutdownComplete");
+        shutdownCompleteEmitted = true;
+      })();
+    },
+    stop: async (stopOpts?: { timeoutMs?: number }) => {
+      if (state !== "started") {
+        opts?.logger?.warn(`cannot stop processor from '${state}'`);
+        return;
+      }
+      state = "stopping";
+      opts?.logger?.debug("processor stopping");
+
+      const _stopOpts = {
+        timeoutMs: 10000,
+        ...stopOpts,
+      };
+
+      let caughtErr;
+      try {
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            if (shutdownCompleteEmitted) {
+              opts?.logger?.debug("shutdownCompleteEmitted caught in shutdown");
+              return resolve();
+            }
+
+            ee.once("shutdownComplete", () => {
+              opts?.logger?.debug("shutdownComplete event caught in shutdown");
+              resolve();
+            });
+            opts?.logger?.debug("shutdown aborting AbortController");
+            ac.abort();
+          }),
+          new Promise((_, reject) => {
+            sleep(_stopOpts.timeoutMs).then(() => {
+              reject(
+                new Error(`shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`),
+              );
+            });
+          }),
+        ]);
+      } catch (error) {
+        caughtErr = error;
+      }
+
+      ee.removeAllListeners("shutdownComplete");
+      state = "stopped";
+      opts?.logger?.debug("processor stopped");
+
+      if (caughtErr) {
+        opts?.logger?.debug("shutdown error", caughtErr);
+        throw caughtErr;
+      }
+    },
+  };
+};

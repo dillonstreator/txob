@@ -1,9 +1,10 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { Client } from "pg";
-import { processEvents } from "../../src/processor";
+import { EventProcessor } from "../../src/processor";
 import { createProcessorClient } from "../../src/pg/client";
 import dotenv from "dotenv";
+import gracefulShutdown from "http-graceful-shutdown";
 dotenv.config();
 
 const eventTypes = {
@@ -19,35 +20,11 @@ const main = async () => {
     database: process.env.POSTGRES_DB,
   });
   await client.connect();
-  await client.query(`CREATE TABLE IF NOT EXISTS events (
-    id UUID,
-    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    type VARCHAR(255) NOT NULL,
-    data JSONB,
-    correlation_id UUID,
-    handler_results JSONB,
-    errors INTEGER,
-    backoff_until TIMESTAMPTZ,
-    processed_at TIMESTAMPTZ
-)`);
-  await client.query(`CREATE TABLE IF NOT EXISTS activity (
-    id UUID,
-    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    ip TEXT,
-    ua TEXT,
-    method TEXT,
-    path TEXT,
-    correlation_id UUID
-)`);
+  await migrate(client);
 
-  const ab = new AbortController();
-
-  const processorClient = createProcessorClient<EventType>(client);
-
-  const processorTick = () => {
-    if (ab.signal.aborted) return;
-
-    processEvents(processorClient, {
+  const processor = EventProcessor(
+    createProcessorClient<EventType>(client),
+    {
       ResourceSaved: {
         thing1: async (event) => {
           console.log(`${event.id} thing1 ${event.correlation_id}`);
@@ -68,11 +45,10 @@ const main = async () => {
           return;
         },
       },
-    }).finally(() => {
-      setTimeout(processorTick, 5000);
-    });
-  };
-  processorTick();
+    },
+    { sleepTimeMs: 5000, logger: console },
+  );
+  processor.start();
 
   const server = http.createServer(async (req, res) => {
     const correlationId = randomUUID();
@@ -120,6 +96,12 @@ const main = async () => {
   });
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`listening on ${port}`));
+
+  gracefulShutdown(server, {
+    onShutdown: async () => {
+      await processor.stop();
+    },
+  });
 };
 
 if (require.main === module) {
@@ -128,3 +110,26 @@ if (require.main === module) {
     process.exit(1);
   });
 }
+
+const migrate = async (client: Client): Promise<void> => {
+  await client.query(`CREATE TABLE IF NOT EXISTS events (
+    id UUID,
+    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    type VARCHAR(255) NOT NULL,
+    data JSONB,
+    correlation_id UUID,
+    handler_results JSONB,
+    errors INTEGER,
+    backoff_until TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ
+)`);
+  await client.query(`CREATE TABLE IF NOT EXISTS activity (
+    id UUID,
+    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    ip TEXT,
+    ua TEXT,
+    method TEXT,
+    path TEXT,
+    correlation_id UUID
+)`);
+};
