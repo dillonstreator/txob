@@ -59,7 +59,7 @@ export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
   updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
 }
 
-const defaultBackoff = (errorCount: number): Date => {
+export const defaultBackoff = (errorCount: number): Date => {
   const baseDelayMs = 1000;
   const maxDelayMs = 1000 * 60;
   const backoffMs = Math.min(baseDelayMs * 2 ** errorCount, maxDelayMs);
