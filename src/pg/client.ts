@@ -5,6 +5,9 @@ interface Querier {
   query: Client["query"];
 }
 
+// TODO: leverage the signal option that comes in on options for `getUnprocessedEvents` and `getEventByIdForUpdateSkipLocked`
+// to cancel queries if/when supported by `pg` https://github.com/brianc/node-postgres/issues/2774
+
 export const createProcessorClient = <EventType extends string>(
   querier: Querier,
   table: string = "events",
