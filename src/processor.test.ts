@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { TxOBEvent, processEvents } from "./processor";
+import { Processor, TxOBEvent, processEvents } from "./processor";
+import { sleep } from "./sleep";
 
 const mockTxClient = {
   getEventByIdForUpdateSkipLocked: vi.fn(),
@@ -243,5 +244,43 @@ describe("processEvents", () => {
       type: "evtType1",
       processed_at: now,
     });
+  });
+});
+
+describe("Processor", () => {
+  it("should shutdown gracefully", async () => {
+    let calls = 0;
+    let aborted = false;
+    const processor = Processor(
+      ({ signal }) => {
+        calls++;
+        return new Promise((r) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            r();
+          });
+        });
+      },
+      { sleepTimeMs: 0 },
+    );
+    processor.start();
+
+    await processor.stop();
+
+    expect(calls).toBe(1);
+    expect(aborted).toBe(true);
+  });
+  it("should respect shutdown timeout and throw", async () => {
+    const processor = Processor(() => sleep(100), { sleepTimeMs: 0 });
+    processor.start();
+
+    const start = Date.now();
+    try {
+      await processor.stop({ timeoutMs: 10});
+    } catch (error) {
+      expect(error.message).toBe('shutdown timeout 10ms elapsed')
+    }
+    const diff = Date.now() - start;
+    expect(diff).toBeLessThan(50);
   });
 });

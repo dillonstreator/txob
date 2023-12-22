@@ -1,6 +1,7 @@
 import { retryable, RetryOpts } from "./retry";
 import { getDate } from "./date";
 import EventEmitter from "node:events";
+import { sleep } from "./sleep";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -256,8 +257,6 @@ class SignalAbortedError extends Error {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 export const Processor = (
   fn: ({ signal }: { signal: AbortSignal }) => Promise<void>,
   opts?: { sleepTimeMs?: number; logger?: Logger },
@@ -299,11 +298,10 @@ export const Processor = (
           } catch (error) {
             if (error instanceof SignalAbortedError) {
               opts?.logger?.debug(error.message);
+              break;
             } else {
               opts?.logger?.error(error);
             }
-
-            break;
           } finally {
             if (abortListener)
               ac.signal.removeEventListener("abort", abortListener);

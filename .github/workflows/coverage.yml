@@ -25,6 +25,7 @@ jobs:
       - name: Remove examples dir
         run: |
           rm -rf examples
+          rm -rf src/mongodb
 
       - name: Run the tests
         run: yarn test:ci
