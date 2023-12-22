@@ -146,6 +146,9 @@ export const processEvents = async <TxOBEventType extends string>(
         _opts.logger?.debug(`processing event`, { eventId: lockedEvent.id });
 
         // TODO: consider concurrently processing events handler with max concurrency configuration
+        //
+        // handlers are already concurrently executed but a configuration for max concurrency could be
+        // nice especially if a client has many handlers for a given event type
         await Promise.allSettled(
           Object.entries(eventHandlerMap).map(
             async ([handlerName, handler]): Promise<void> => {
