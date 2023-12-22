@@ -5,14 +5,14 @@ interface Querier {
   query: Client["query"];
 }
 
-// TODO: leverage the signal option that comes in on options for `getUnprocessedEvents` and `getEventByIdForUpdateSkipLocked`
+// TODO: leverage the signal option that comes in on options for `getReadyToProcessEvents` and `getReadyToProcessEventByIdForUpdateSkipLocked`
 // to cancel queries if/when supported by `pg` https://github.com/brianc/node-postgres/issues/2774
 
 export const createProcessorClient = <EventType extends string>(
   querier: Querier,
   table: string = "events",
 ): TxOBProcessorClient<EventType> => ({
-  getUnprocessedEvents: async (opts) => {
+  getReadyToProcessEvents: async (opts) => {
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
@@ -25,10 +25,10 @@ export const createProcessorClient = <EventType extends string>(
     try {
       await querier.query("BEGIN");
       await fn({
-        getEventByIdForUpdateSkipLocked: async (eventId) => {
+        getReadyToProcessEventByIdForUpdateSkipLocked: async (eventId, opts) => {
           const event = await querier.query<TxOBEvent<EventType>>(
-            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${table} WHERE id = $1 FOR UPDATE SKIP LOCKED`,
-            [eventId],
+            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${table} WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED`,
+            [eventId, opts.maxErrors],
           );
           if (event.rowCount === 0) {
             return null;

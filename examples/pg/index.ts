@@ -1,8 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { Client } from "pg";
-import { EventProcessor } from "../../src/processor";
-import { createProcessorClient } from "../../src/pg/client";
 import dotenv from "dotenv";
 import gracefulShutdown from "http-graceful-shutdown";
 dotenv.config();
@@ -11,7 +9,7 @@ const eventTypes = {
   ResourceSaved: "ResourceSaved",
 } as const;
 
-type EventType = keyof typeof eventTypes;
+export type EventType = keyof typeof eventTypes;
 
 const main = async () => {
   const client = new Client({
@@ -21,34 +19,6 @@ const main = async () => {
   });
   await client.connect();
   await migrate(client);
-
-  const processor = EventProcessor(
-    createProcessorClient<EventType>(client),
-    {
-      ResourceSaved: {
-        thing1: async (event) => {
-          console.log(`${event.id} thing1 ${event.correlation_id}`);
-          if (Math.random() > 0.9) throw new Error("some issue");
-
-          return;
-        },
-        thing2: async (event) => {
-          console.log(`${event.id} thing2 ${event.correlation_id}`);
-          if (Math.random() > 0.9) throw new Error("some issue");
-
-          return;
-        },
-        thing3: async (event) => {
-          console.log(`${event.id} thing3 ${event.correlation_id}`);
-          if (Math.random() > 0.75) throw new Error("some issue");
-
-          return;
-        },
-      },
-    },
-    { sleepTimeMs: 5000, logger: console },
-  );
-  processor.start();
 
   const server = http.createServer(async (req, res) => {
     const correlationId = randomUUID();
@@ -97,11 +67,7 @@ const main = async () => {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`listening on ${port}`));
 
-  gracefulShutdown(server, {
-    onShutdown: async () => {
-      await processor.stop();
-    },
-  });
+  gracefulShutdown(server);
 };
 
 if (require.main === module) {
@@ -111,7 +77,7 @@ if (require.main === module) {
   });
 }
 
-const migrate = async (client: Client): Promise<void> => {
+export const migrate = async (client: Client): Promise<void> => {
   await client.query(`CREATE TABLE IF NOT EXISTS events (
     id UUID,
     timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,

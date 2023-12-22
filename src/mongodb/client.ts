@@ -2,20 +2,22 @@ import { MongoClient, ObjectId } from "mongodb";
 import { TxOBEvent, TxOBProcessorClient } from "../processor";
 import { getDate } from "../date";
 
+const createReadyToProcessFilter = (maxErrors: number) => ({
+  processed_at: null,
+  $or: [{ backoff_until: null }, { backoff_until: { $lt: getDate() } }],
+  errors: { $lt: maxErrors },
+});
+
 export const createProcessorClient = <EventType extends string>(
   mongo: MongoClient,
   db: string,
   collection: string = "events",
 ): TxOBProcessorClient<EventType> => ({
-  getUnprocessedEvents: async (opts) => {
+  getReadyToProcessEvents: async (opts) => {
     const events = (await mongo
       .db(db)
       .collection(collection)
-      .find({
-        processed_at: null,
-        $or: [{ backoff_until: null }, { backoff_until: { $lt: getDate() } }],
-        errors: { $lt: opts.maxErrors },
-      })
+      .find(createReadyToProcessFilter(opts.maxErrors))
       .project({ id: 1, errors: 1 })
       .toArray()) as Pick<TxOBEvent<EventType>, "id" | "errors">[];
 
@@ -24,14 +26,17 @@ export const createProcessorClient = <EventType extends string>(
   transaction: async (fn) => {
     await mongo.withSession(async (session): Promise<void> => {
       await fn({
-        getEventByIdForUpdateSkipLocked: async (eventId) => {
+        getReadyToProcessEventByIdForUpdateSkipLocked: async (
+          eventId,
+          opts,
+        ) => {
           try {
             // https://www.mongodb.com/blog/post/how-to-select--for-update-inside-mongodb-transactions
             const event = (await mongo
               .db(db)
               .collection(collection)
               .findOneAndUpdate(
-                { id: eventId },
+                { id: eventId, ...createReadyToProcessFilter(opts.maxErrors) },
                 {
                   $set: {
                     lock: new ObjectId(),
@@ -52,6 +57,8 @@ export const createProcessorClient = <EventType extends string>(
                   },
                 },
               )) as unknown;
+
+            if (!event) return null;
 
             return event as TxOBEvent<EventType>;
           } catch (error) {

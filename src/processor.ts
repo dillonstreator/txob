@@ -38,11 +38,12 @@ export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
 
 type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
+  maxErrors: number
 };
 
 export interface TxOBProcessorClient<TxOBEventType extends string> {
-  getUnprocessedEvents(
-    opts: TxOBProcessorClientOpts & { maxErrors: number },
+  getReadyToProcessEvents(
+    opts: TxOBProcessorClientOpts,
   ): Promise<Pick<TxOBEvent<TxOBEventType>, "id" | "errors">[]>;
   transaction(
     fn: (
@@ -52,7 +53,7 @@ export interface TxOBProcessorClient<TxOBEventType extends string> {
 }
 
 export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
-  getEventByIdForUpdateSkipLocked(
+  getReadyToProcessEventByIdForUpdateSkipLocked(
     eventId: TxOBEvent<TxOBEventType>["id"],
     opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
@@ -88,7 +89,7 @@ export const processEvents = async <TxOBEventType extends string>(
     ...opts,
   };
 
-  const events = await client.getUnprocessedEvents(_opts);
+  const events = await client.getReadyToProcessEvents(_opts);
   _opts.logger?.debug(`found ${events.length} events to process`);
 
   // TODO: consider concurrently processing events with max concurrency configuration
@@ -98,9 +99,9 @@ export const processEvents = async <TxOBEventType extends string>(
     }
     if (unlockedEvent.errors >= _opts.maxErrors) {
       // Potential issue with client configuration on finding unprocessed events
-      // Events with maximum allowed errors should not be returned from `getUnprocessedEvents`
+      // Events with maximum allowed errors should not be returned from `getReadyToProcessEvents`
       _opts.logger?.warn(
-        "unexpected event with max errors returned from `getUnprocessedEvents`",
+        "unexpected event with max errors returned from `getReadyToProcessEvents`",
         {
           eventId: unlockedEvent.id,
           errors: unlockedEvent.errors,
@@ -112,19 +113,20 @@ export const processEvents = async <TxOBEventType extends string>(
 
     try {
       await client.transaction(async (txClient) => {
-        const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
+        const lockedEvent = await txClient.getReadyToProcessEventByIdForUpdateSkipLocked(
           unlockedEvent.id,
-          { signal: _opts.signal },
+          { signal: _opts.signal, maxErrors: _opts.maxErrors },
         );
         if (!lockedEvent) {
-          _opts.logger?.debug("skipping locked event", {
+          _opts.logger?.debug("skipping locked or already processed event", {
             eventId: unlockedEvent.id,
           });
           return;
         }
         if (lockedEvent.processed_at) {
           // While unlikely, this is possible if a concurrent processor finished processing this event between the time
-          // that this processor found the event with `getUnprocessedEvents` and called `getEventByIdForUpdateSkipLocked`
+          // that this processor found the event with `getReadyToProcessEvents` and called `getReadyToProcessEventByIdForUpdateSkipLocked`
+          // `getReadyToProcessEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
           _opts.logger?.debug("skipping already processed event", {
             eventId: lockedEvent.id,
           });

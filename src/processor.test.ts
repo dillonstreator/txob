@@ -9,11 +9,11 @@ import {
 import { sleep } from "./sleep";
 
 const mockTxClient = {
-  getEventByIdForUpdateSkipLocked: vi.fn(),
+  getReadyToProcessEventByIdForUpdateSkipLocked: vi.fn(),
   updateEvent: vi.fn(),
 };
 const mockClient = {
-  getUnprocessedEvents: vi.fn(),
+  getReadyToProcessEvents: vi.fn(),
   transaction: vi.fn(async (fn) => fn(mockTxClient)),
 };
 
@@ -37,12 +37,12 @@ describe("processEvents", () => {
       backoff: () => now,
     };
     const handlerMap = {};
-    mockClient.getUnprocessedEvents.mockImplementation(() => []);
+    mockClient.getReadyToProcessEvents.mockImplementation(() => []);
     processEvents(mockClient, handlerMap, opts);
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledOnce();
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledWith(opts);
     expect(mockClient.transaction).not.toHaveBeenCalled();
-    expect(mockTxClient.getEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
+    expect(mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
     expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
   });
 
@@ -113,8 +113,8 @@ describe("processEvents", () => {
       processed_at: now,
     };
     const events = [evt1, evt2, evt3, evt4];
-    mockClient.getUnprocessedEvents.mockImplementation(() => events);
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+    mockClient.getReadyToProcessEvents.mockImplementation(() => events);
+    mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked.mockImplementation((id) => {
       if (id === evt3.id) return null;
 
       return events.find((e) => e.id === id);
@@ -128,8 +128,8 @@ describe("processEvents", () => {
 
     await processEvents(mockClient, handlerMap, opts);
 
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledOnce();
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledWith(opts);
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(3);
 
@@ -143,7 +143,7 @@ describe("processEvents", () => {
     });
     expect(handlerMap.evtType1.handler3).not.toHaveBeenCalled();
 
-    expect(mockTxClient.getEventByIdForUpdateSkipLocked).toHaveBeenCalledTimes(
+    expect(mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked).toHaveBeenCalledTimes(
       3,
     );
 
@@ -213,8 +213,8 @@ describe("processEvents", () => {
       errors: 1,
     };
     const events = [evt1];
-    mockClient.getUnprocessedEvents.mockImplementation(() => events);
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+    mockClient.getReadyToProcessEvents.mockImplementation(() => events);
+    mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked.mockImplementation((id) => {
       return events.find((e) => e.id === id);
     });
     mockTxClient.updateEvent.mockImplementation(() => {
@@ -223,8 +223,8 @@ describe("processEvents", () => {
 
     await processEvents(mockClient, handlerMap, opts);
 
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledWith(opts);
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledOnce();
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledWith(opts);
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(1);
 
@@ -232,7 +232,7 @@ describe("processEvents", () => {
     expect(handlerMap.evtType1.handler1).toHaveBeenCalledWith(evt1, {
       signal: undefined,
     });
-    expect(mockTxClient.getEventByIdForUpdateSkipLocked).toHaveBeenCalledTimes(
+    expect(mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked).toHaveBeenCalledTimes(
       1,
     );
 
@@ -320,15 +320,15 @@ describe("EventProcessor", () => {
       backoff: () => now,
     };
     const handlerMap = {};
-    mockClient.getUnprocessedEvents.mockImplementation(() => []);
+    mockClient.getReadyToProcessEvents.mockImplementation(() => []);
     const processor = EventProcessor(mockClient, handlerMap, opts);
     processor.start();
 
     await processor.stop();
 
-    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
+    expect(mockClient.getReadyToProcessEvents).toHaveBeenCalledOnce();
     expect(mockClient.transaction).not.toHaveBeenCalled();
-    expect(mockTxClient.getEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
+    expect(mockTxClient.getReadyToProcessEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
     expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
   });
 });
