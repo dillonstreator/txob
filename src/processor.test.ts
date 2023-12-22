@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  EventProcessor,
   Processor,
   TxOBEvent,
   defaultBackoff,
@@ -309,5 +310,25 @@ describe("Processor", () => {
     }
     const diff = Date.now() - start;
     expect(diff).toBeLessThan(50);
+  });
+});
+
+describe("EventProcessor", () => {
+  it("should call into processEvents", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: () => now,
+    };
+    const handlerMap = {};
+    mockClient.getUnprocessedEvents.mockImplementation(() => []);
+    const processor = EventProcessor(mockClient, handlerMap, opts);
+    processor.start();
+
+    await processor.stop();
+
+    expect(mockClient.getUnprocessedEvents).toHaveBeenCalledOnce();
+    expect(mockClient.transaction).not.toHaveBeenCalled();
+    expect(mockTxClient.getEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
+    expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
   });
 });
