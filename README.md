@@ -34,9 +34,9 @@
 - `backoff_until` Date nullable
 - `processed_at` Date nullable
 
-`txob` exposes an optionally configurable interface into event processing with control over max errors, backoff calculation on error, event update retrying, and logging.
+`txob` exposes an optionally configurable interface into event processing with control over maximum allowed errors, backoff calculation on error, event update retrying, and logging.
 
-As per the 'transactional outbox specification', you should ensure your events are transactionally persisted alongside mutations.
+As per the 'transactional outbox specification', you should ensure your events are transactionally persisted alongside their related data mutations.
 
 The processor handles graceful shutdown and is horizontally scalable by default with the native client implementatations for [`pg`](./src/pg/client.ts) and [`mongodb`](./src/mongodb/client.ts).
 
@@ -48,7 +48,7 @@ The processor handles graceful shutdown and is horizontally scalable by default 
 
 ### Examples
 
-Let's look at an example of an HTTP API that allows a user to be invited and must send an email on invite.
+Let's look at an example of an HTTP API that allows a user to be invited where a email must be sent along with the invite.
 
 ```ts
 import http from "node:http";
@@ -77,6 +77,7 @@ const processor = EventProcessor(
     UserInvited: {
       sendEmail: async (event, { signal }) => {
         // find user by event.data.userId to use relevant user data in email sending
+
         // email sending logic
 
         // use the AbortSignal `signal` to perform quick cleanup
