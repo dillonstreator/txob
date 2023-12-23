@@ -22,7 +22,7 @@
 
 `txob` _does not_ prescribe a storage layer implementation.
 
-`txob` _does_ prescribe a base event storage data model that enables a high level of visibility into event handler processing.
+`txob` _does_ prescribe a base event storage data model that enables a high level of visibility into event handler processing outcomes.
 
 - `id` string
 - `timestamp` Date
