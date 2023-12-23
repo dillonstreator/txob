@@ -1,11 +1,13 @@
 {
   "name": "txob",
-  "description": "generic transactional outbox event processor",
+  "description": "generic transactional outbox event processor with graceful shutdown and horizontal scalability",
   "keywords": [
     "DDD",
     "outbox pattern",
     "transactional outbox",
-    "event processor"
+    "event processor",
+    "graceful shutdown",
+    "microservices"
   ],
   "author": "Dillon Streator <dillonstreator@gmail.com>",
   "homepage": "https://github.com/dillonstreator/txob",

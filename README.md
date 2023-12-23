@@ -1,5 +1,5 @@
 <h1 align="center">txob</h1>
-<p align="center">A generic transactional outbox event processor</p>
+<p align="center">A generic <a href="https://microservices.io/patterns/data/transactional-outbox.html">transactional outbox</a> event processor with graceful shutdown and horizontal scalability</p>
 <p align="center">
   <a href="https://codecov.io/gh/dillonstreator/txob" >
     <img src="https://codecov.io/gh/dillonstreator/txob/graph/badge.svg?token=E9M7G67VLL"/>
