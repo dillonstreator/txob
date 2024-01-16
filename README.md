@@ -51,6 +51,7 @@ Let's look at an example of an HTTP API that allows a user to be invited where a
 
 ```ts
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import gracefulShutdown from "http-graceful-shutdown";
 import { EventProcessor } from "txob";
@@ -81,7 +82,7 @@ const processor = EventProcessor(
 
         // use the AbortSignal `signal` to perform quick cleanup
         // during graceful shutdown enabling the processor to
-        // save handler result updates to the event
+        // save handler result updates to the event ASAP
       },
       // other handler that should be executed when a `UserInvited` event is saved
     },
@@ -94,7 +95,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url  !== "/invite") return;
 
   // invite user endpoint
-  
+
   const correlationId = randomUUID(); // or some value on the incoming request such as a request id
 
   try {
@@ -116,7 +117,7 @@ const server = http.createServer(async (req, res) => {
 
     await client.query("COMMIT");
   } catch (error) {
-    await client.query("COMMIT").catch(() => {});
+    await client.query("ROLLBACK").catch(() => {});
   }
 });
 
@@ -127,8 +128,6 @@ gracefulShutdown(server, {
     await processor.stop();
   }
 });
-
 ```
-
 
 [other examples](./examples)
