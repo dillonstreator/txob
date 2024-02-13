@@ -71,8 +71,10 @@ const client = new Client({
 });
 await client.connect();
 
+const HTTP_PORT = process.env.PORT || 3000;
+
 const processor = EventProcessor(
-  createProcessorClient<EevntType>(client),
+  createProcessorClient<EventType>(client),
   {
     UserInvited: {
       sendEmail: async (event, { signal }) => {
@@ -83,6 +85,9 @@ const processor = EventProcessor(
         // use the AbortSignal `signal` to perform quick cleanup
         // during graceful shutdown enabling the processor to
         // save handler result updates to the event ASAP
+      },
+      publish: async (event) => {
+        // publish to event bus
       },
       // other handler that should be executed when a `UserInvited` event is saved
     },
@@ -119,7 +124,7 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
   }
-});
+}).listen(HTTP_PORT, () => console.log(`listening on port ${HTTP_PORT}`));
 
 gracefulShutdown(server, {
   onShutdown: async () => {
