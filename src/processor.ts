@@ -42,7 +42,7 @@ type TxOBProcessorClientOpts = {
 };
 
 export interface TxOBProcessorClient<TxOBEventType extends string> {
-  getReadyToProcessEvents(
+  findReadyToProcessEvents(
     opts: TxOBProcessorClientOpts,
   ): Promise<Pick<TxOBEvent<TxOBEventType>, "id" | "errors">[]>;
   transaction(
@@ -53,7 +53,7 @@ export interface TxOBProcessorClient<TxOBEventType extends string> {
 }
 
 export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
-  getReadyToProcessEventByIdForUpdateSkipLocked(
+  findReadyToProcessEventByIdForUpdateSkipLocked(
     eventId: TxOBEvent<TxOBEventType>["id"],
     opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
@@ -89,7 +89,7 @@ export const processEvents = async <TxOBEventType extends string>(
     ...opts,
   };
 
-  const events = await client.getReadyToProcessEvents(_opts);
+  const events = await client.findReadyToProcessEvents(_opts);
   _opts.logger?.debug(`found ${events.length} events to process`);
 
   // TODO: consider concurrently processing events with max concurrency configuration
@@ -99,9 +99,9 @@ export const processEvents = async <TxOBEventType extends string>(
     }
     if (unlockedEvent.errors >= _opts.maxErrors) {
       // Potential issue with client configuration on finding unprocessed events
-      // Events with maximum allowed errors should not be returned from `getReadyToProcessEvents`
+      // Events with maximum allowed errors should not be returned from `findReadyToProcessEvents`
       _opts.logger?.warn(
-        "unexpected event with max errors returned from `getReadyToProcessEvents`",
+        "unexpected event with max errors returned from `findReadyToProcessEvents`",
         {
           eventId: unlockedEvent.id,
           errors: unlockedEvent.errors,
@@ -113,7 +113,7 @@ export const processEvents = async <TxOBEventType extends string>(
 
     try {
       await client.transaction(async (txClient) => {
-        const lockedEvent = await txClient.getReadyToProcessEventByIdForUpdateSkipLocked(
+        const lockedEvent = await txClient.findReadyToProcessEventByIdForUpdateSkipLocked(
           unlockedEvent.id,
           { signal: _opts.signal, maxErrors: _opts.maxErrors },
         );
@@ -125,8 +125,8 @@ export const processEvents = async <TxOBEventType extends string>(
         }
 
         // While unlikely, the following two conditions are possible if a concurrent processor finished processing this event or reaching maximum errors between the time
-        // that this processor found the event with `getReadyToProcessEvents` and called `getReadyToProcessEventByIdForUpdateSkipLocked`
-        // `getReadyToProcessEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
+        // that this processor found the event with `findReadyToProcessEvents` and called `findReadyToProcessEventByIdForUpdateSkipLocked`
+        // `findReadyToProcessEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
         if (lockedEvent.processed_at) {
           _opts.logger?.debug("skipping already processed event", {
             eventId: lockedEvent.id,

@@ -13,7 +13,7 @@ export const createProcessorClient = <EventType extends string>(
   db: string,
   collection: string = "events",
 ): TxOBProcessorClient<EventType> => ({
-  getReadyToProcessEvents: async (opts) => {
+  findReadyToProcessEvents: async (opts) => {
     const events = (await mongo
       .db(db)
       .collection(collection)
@@ -26,7 +26,7 @@ export const createProcessorClient = <EventType extends string>(
   transaction: async (fn) => {
     await mongo.withSession(async (session): Promise<void> => {
       await fn({
-        getReadyToProcessEventByIdForUpdateSkipLocked: async (
+        findReadyToProcessEventByIdForUpdateSkipLocked: async (
           eventId,
           opts,
         ) => {

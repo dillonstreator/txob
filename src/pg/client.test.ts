@@ -7,12 +7,12 @@ describe("createProcessorClient", () => {
       query: vi.fn(),
     };
     const client = createProcessorClient(pgClient);
-    expect(typeof client.getReadyToProcessEvents).toBe("function");
+    expect(typeof client.findReadyToProcessEvents).toBe("function");
     expect(typeof client.transaction).toBe("function");
   });
 });
 
-describe("getReadyToProcessEvents", () => {
+describe("findReadyToProcessEvents", () => {
   it("should execute the correct query", async () => {
     const rows = [1, 2, 3];
     const pgClient = {
@@ -26,7 +26,7 @@ describe("getReadyToProcessEvents", () => {
       maxErrors: 10,
     };
     const client = createProcessorClient(pgClient);
-    const result = await client.getReadyToProcessEvents(opts);
+    const result = await client.findReadyToProcessEvents(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
       "SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
@@ -62,7 +62,7 @@ describe("transaction", () => {
     expect(pgClient.query).toHaveBeenNthCalledWith(2, "ROLLBACK");
   });
 
-  describe("getReadyToProcessEventByIdForUpdateSkipLocked", () => {
+  describe("findReadyToProcessEventByIdForUpdateSkipLocked", () => {
     it("should execute the correct query", async () => {
       const rows = [1, 2, 3];
       const pgClient = {
@@ -77,7 +77,7 @@ describe("transaction", () => {
       const client = createProcessorClient(pgClient);
       let result: any;
       await client.transaction(async (txClient) => {
-        result = await txClient.getReadyToProcessEventByIdForUpdateSkipLocked(eventId, { maxErrors: 6 });
+        result = await txClient.findReadyToProcessEventByIdForUpdateSkipLocked(eventId, { maxErrors: 6 });
       });
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
@@ -102,7 +102,7 @@ describe("transaction", () => {
       const client = createProcessorClient(pgClient);
       let result: any;
       await client.transaction(async (txClient) => {
-        result = await txClient.getReadyToProcessEventByIdForUpdateSkipLocked(eventId, { maxErrors: 5 });
+        result = await txClient.findReadyToProcessEventByIdForUpdateSkipLocked(eventId, { maxErrors: 5 });
       });
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
