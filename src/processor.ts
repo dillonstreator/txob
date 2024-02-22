@@ -5,14 +5,14 @@ import { sleep } from "./sleep";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
-  errors?: { error: any; timestamp: Date }[];
+  errors?: { error: unknown; timestamp: Date }[];
 };
 
 export type TxOBEvent<TxOBEventType extends string> = {
   id: string;
   timestamp: Date;
   type: TxOBEventType;
-  data: Record<string, any>;
+  data: Record<string, unknown>;
   correlation_id: string;
   handler_results: Record<string, TxOBEventHandlerResult>;
   errors: number;
@@ -256,10 +256,10 @@ export const processEvents = async <TxOBEventType extends string>(
 };
 
 export interface Logger {
-  debug(message?: any, ...optionalParams: any[]): void;
-  info(message?: any, ...optionalParams: any[]): void;
-  warn(message?: any, ...optionalParams: any[]): void;
-  error(message?: any, ...optionalParams: any[]): void;
+  debug(message?: unknown, ...optionalParams: unknown[]): void;
+  info(message?: unknown, ...optionalParams: unknown[]): void;
+  warn(message?: unknown, ...optionalParams: unknown[]): void;
+  error(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
 export const EventProcessor = <TxOBEventType extends string>(
@@ -310,7 +310,7 @@ export const Processor = (
       state = "started";
       opts?.logger?.debug("processor started");
 
-      let abortListener: ((this: AbortSignal, ev: Event) => any) | null = null;
+      let abortListener: ((this: AbortSignal, ev: Event) => unknown) | null = null;
 
       (async () => {
         while (true) {
