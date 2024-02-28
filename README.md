@@ -47,7 +47,7 @@ The processor handles graceful shutdown and is horizontally scalable by default 
 
 ### Examples
 
-Let's look at an example of an HTTP API that allows a user to be invited where a email must be sent along with the invite.
+Let's look at an example of an HTTP API that allows a user to be invited where an SMTP request must be sent as a side-effect of the invite.
 
 ```ts
 import http from "node:http";
