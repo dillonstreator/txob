@@ -5,7 +5,7 @@
     <img src="https://codecov.io/gh/dillonstreator/txob/graph/badge.svg?token=E9M7G67VLL"/>
   </a>
   <a aria-label="NPM version" href="https://www.npmjs.com/package/txob">
-    <img alt="" src="https://badgen.net/npm/v/txob?v=0.0.19">
+    <img alt="" src="https://badgen.net/npm/v/txob?v=0.0.20">
   </a>
   <a aria-label="License" href="https://github.com/dillonstreator/txob/blob/main/LICENSE">
     <img alt="" src="https://badgen.net/npm/license/txob">
@@ -107,11 +107,12 @@ const server = http.createServer(async (req, res) => {
     await client.query("BEGIN");
 
     const userId = randomUUID();
-    // save/create user with userId
+    // save user with userId
+    await client.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [userId, req.body.email]);
 
     // save event to `events` table
     await client.query(
-      `INSERT INTO events (id, type, data, correlation_id) VALUES ( $1, $2, $3, $4 )`,
+      `INSERT INTO events (id, type, data, correlation_id) VALUES ($1, $2, $3, $4)`,
       [
         randomUUID(),
         eventTypes.UserInvited,
