@@ -1,5 +1,8 @@
 import { Client } from "pg";
-import { EventProcessor } from "../../src/processor";
+import {
+  ErrorUnprocessableEventHandler,
+  EventProcessor,
+} from "../../src/processor";
 import { createProcessorClient } from "../../src/pg/client";
 import { migrate, type EventType } from "./index";
 import dotenv from "dotenv";
@@ -29,6 +32,8 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
         thing2: async (event) => {
           console.log(`${event.id} thing2 ${event.correlation_id}`);
           if (Math.random() > 0.9) throw new Error("some issue");
+          if (Math.random() > 0.6)
+            throw new ErrorUnprocessableEventHandler(new Error("parent error"));
 
           return;
         },

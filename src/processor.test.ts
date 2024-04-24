@@ -3,6 +3,7 @@ import {
   EventProcessor,
   Processor,
   TxOBEvent,
+  ErrorUnprocessableEventHandler,
   defaultBackoff,
   processEvents,
 } from "./processor";
@@ -254,6 +255,104 @@ describe("processEvents", () => {
         },
         handler2: {
           processed_at: now,
+        },
+      },
+      id: "1",
+      timestamp: now,
+      type: "evtType1",
+      processed_at: now,
+    });
+  });
+
+  it("respects ErrorUnprocessableEventHandler sentinel error to stop handler processing", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(),
+    };
+    const err = new Error("some error");
+    const errUnprocessable = new ErrorUnprocessableEventHandler(
+      new Error("err1"),
+    );
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(errUnprocessable)),
+        handler2: vi.fn(() => Promise.reject(errUnprocessable)),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {
+        handler1: {
+          errors: [{ error: err.message, timestamp: now }],
+        },
+        handler2: {
+          processed_at: now,
+        },
+        handler3: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable.message,
+              timestamp: now,
+            },
+          ],
+        },
+      },
+      errors: 1,
+    };
+    const events = [evt1];
+    mockClient.getEventsToProcess.mockImplementation(() => events);
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return events.find((e) => e.id === id);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    await processEvents(mockClient, handlerMap, opts);
+
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith(opts);
+
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledWith(evt1, {
+      signal: undefined,
+    });
+    expect(mockTxClient.getEventByIdForUpdateSkipLocked).toHaveBeenCalledTimes(
+      1,
+    );
+
+    expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
+    expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
+      backoff_until: null,
+      correlation_id: "abc123",
+      data: {},
+      errors: 1,
+      handler_results: {
+        handler1: {
+          unprocessable_at: now,
+          errors: [
+            { error: err.message, timestamp: now },
+            { error: errUnprocessable.message, timestamp: now },
+          ],
+        },
+        handler2: {
+          processed_at: now,
+        },
+        handler3: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable.message,
+              timestamp: now,
+            },
+          ],
         },
       },
       id: "1",
