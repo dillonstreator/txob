@@ -5,6 +5,7 @@ import { sleep } from "./sleep";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
+  unprocessable_at?: Date;
   errors?: { error: unknown; timestamp: Date }[];
 };
 
@@ -38,7 +39,7 @@ export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
 
 type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
-  maxErrors: number
+  maxErrors: number;
 };
 
 export interface TxOBProcessorClient<TxOBEventType extends string> {
@@ -180,6 +181,15 @@ export const processEvents = async <TxOBEventType extends string>(
                 });
                 return;
               }
+              if (handlerResults.unprocessable_at) {
+                _opts.logger?.debug("handler unprocessable", {
+                  eventId: lockedEvent.id,
+                  type: lockedEvent.type,
+                  handlerName,
+                  correlationId: lockedEvent.correlation_id,
+                });
+                return;
+              }
 
               handlerResults.errors ??= [];
 
@@ -200,11 +210,20 @@ export const processEvents = async <TxOBEventType extends string>(
                   error,
                   correlationId: lockedEvent.correlation_id,
                 });
-                errored = true;
-                handlerResults.errors?.push({
-                  error: (error as Error)?.message ?? error,
-                  timestamp: getDate(),
-                });
+
+                if (error instanceof ErrorUnprocessableEventHandler) {
+                  handlerResults.unprocessable_at = getDate();
+                  handlerResults.errors?.push({
+                    error: error.message ?? error,
+                    timestamp: getDate(),
+                  });
+                } else {
+                  errored = true;
+                  handlerResults.errors?.push({
+                    error: (error as Error)?.message ?? error,
+                    timestamp: getDate(),
+                  });
+                }
               }
 
               lockedEvent.handler_results[handlerName] = handlerResults;
@@ -254,6 +273,21 @@ export const processEvents = async <TxOBEventType extends string>(
     }
   }
 };
+
+/**
+ * ErrorUnprocessableEventHandler can be thrown by an event handler to indicate that the event handler is unprocessable.
+ * It wraps the original error that caused the handler to be unprocessable.
+ * This error will signal the processor to stop processing the event handler and mark the event handler as unprocessable.
+ */
+export class ErrorUnprocessableEventHandler extends Error {
+  error: Error;
+
+  constructor(error: Error) {
+    const message = `unprocessable event handler: ${error.message}`;
+    super(message);
+    this.error = error;
+  }
+}
 
 export interface Logger {
   debug(message?: unknown, ...optionalParams: unknown[]): void;
@@ -310,7 +344,8 @@ export const Processor = (
       state = "started";
       opts?.logger?.debug("processor started");
 
-      let abortListener: ((this: AbortSignal, ev: Event) => unknown) | null = null;
+      let abortListener: ((this: AbortSignal, ev: Event) => unknown) | null =
+        null;
 
       (async () => {
         while (true) {
