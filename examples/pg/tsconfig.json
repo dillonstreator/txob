@@ -9,6 +9,6 @@
     "outDir": "dist",
     "declaration": true
   },
-  "include": ["index.ts"],
+  "include": ["server.ts", "processor.ts"],
   "exclude": ["dist", "node_modules"]
 }

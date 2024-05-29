@@ -4,7 +4,7 @@ import {
   EventProcessor,
 } from "../../src/processor";
 import { createProcessorClient } from "../../src/pg/client";
-import { migrate, type EventType } from "./index";
+import { migrate, type EventType } from "./server";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -15,6 +15,7 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
+    port: parseInt(process.env.POSTGRES_PORT || "5434"),
   });
   await client.connect();
   await migrate(client);

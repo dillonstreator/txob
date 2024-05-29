@@ -16,6 +16,7 @@ const main = async () => {
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
+    port: parseInt(process.env.POSTGRES_PORT || "5434"),
   });
   await client.connect();
   await migrate(client);
@@ -64,7 +65,7 @@ const main = async () => {
     }
     res.end();
   });
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 3003;
   server.listen(port, () => console.log(`listening on ${port}`));
 
   gracefulShutdown(server);
