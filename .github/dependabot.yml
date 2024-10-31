@@ -9,3 +9,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      production-deps:
+        dependency-type: "production"
+      dev-deps:
+        dependency-type: "development"
+      minor-patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
