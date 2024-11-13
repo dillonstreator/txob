@@ -47,7 +47,7 @@ The processor handles graceful shutdown and is horizontally scalable by default 
 
 ### Examples
 
-Let's look at an example of an HTTP API that allows a user to be invited where an SMTP request must be sent as a side-effect of the invite.
+Let's look at an example of an HTTP API that allows a user to be invited where an SMTP request must be sent as a side-effect of the user creation / invite.
 
 ```ts
 import http from "node:http";
@@ -58,7 +58,7 @@ import { EventProcessor } from "txob";
 import { createProcessorClient } from "txob/pg";
 
 const eventTypes = {
-  UserInvited: "UserInvited",
+  UserCreated: "UserCreated",
   // other event types
 } as const;
 
@@ -76,20 +76,20 @@ const HTTP_PORT = process.env.PORT || 3000;
 const processor = EventProcessor(
   createProcessorClient<EventType>(client),
   {
-    UserInvited: {
+    UserCreated: {
       sendEmail: async (event, { signal }) => {
         // find user by event.data.userId to use relevant user data in email sending
 
         // email sending logic
 
-        // use the AbortSignal `signal` to perform quick cleanup
+        // use the AbortSignal `signal` (aborted when EventProcessor#stop is called) to perform quick cleanup
         // during graceful shutdown enabling the processor to
         // save handler result updates to the event ASAP
       },
       publish: async (event) => {
         // publish to event bus
       },
-      // other handler that should be executed when a `UserInvited` event is saved
+      // other handler that should be executed when a `UserCreated` event is saved
     },
     // other event types
   }
@@ -101,7 +101,7 @@ const server = http.createServer(async (req, res) => {
 
   // invite user endpoint
 
-  const correlationId = randomUUID(); // or some value on the incoming request such as a request id
+  const correlationId = randomUUID(); // or some value on the incoming request such as a request id / trace id
 
   try {
     await client.query("BEGIN");
@@ -115,7 +115,7 @@ const server = http.createServer(async (req, res) => {
       `INSERT INTO events (id, type, data, correlation_id) VALUES ($1, $2, $3, $4)`,
       [
         randomUUID(),
-        eventTypes.UserInvited,
+        eventTypes.UserCreated,
         { userId }, // other relevant data
         correlationId,
       ],
