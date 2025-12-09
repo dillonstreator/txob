@@ -30,40 +30,38 @@ export const createProcessorClient = <EventType extends string>(
           eventId,
           opts,
         ) => {
-          try {
-            // https://www.mongodb.com/blog/post/how-to-select--for-update-inside-mongodb-transactions
-            const event = (await mongo
-              .db(db)
-              .collection(collection)
-              .findOneAndUpdate(
-                { id: eventId, ...createReadyToProcessFilter(opts.maxErrors) },
-                {
-                  $set: {
-                    lock: new ObjectId(),
-                  },
+          // https://www.mongodb.com/blog/post/how-to-select--for-update-inside-mongodb-transactions
+          // Note: findOneAndUpdate returns null (not an error) when document not found,
+          // so any thrown error is unexpected and will propagate to the transaction handler
+          const event = (await mongo
+            .db(db)
+            .collection(collection)
+            .findOneAndUpdate(
+              { id: eventId, ...createReadyToProcessFilter(opts.maxErrors) },
+              {
+                $set: {
+                  lock: new ObjectId(),
                 },
-                {
-                  session,
-                  projection: {
-                    id: 1,
-                    timestamp: 1,
-                    type: 1,
-                    data: 1,
-                    correlation_id: 1,
-                    handler_results: 1,
-                    errors: 1,
-                    backoff_until: 1,
-                    processed_at: 1,
-                  },
+              },
+              {
+                session,
+                projection: {
+                  id: 1,
+                  timestamp: 1,
+                  type: 1,
+                  data: 1,
+                  correlation_id: 1,
+                  handler_results: 1,
+                  errors: 1,
+                  backoff_until: 1,
+                  processed_at: 1,
                 },
-              )) as unknown;
+              },
+            )) as unknown;
 
-            if (!event) return null;
+          if (!event) return null;
 
-            return event as TxOBEvent<EventType>;
-          } catch (error) {
-            return null;
-          }
+          return event as TxOBEvent<EventType>;
         },
         updateEvent: async (event) => {
           await mongo
