@@ -368,6 +368,7 @@ export const Processor = (
               break;
             } else {
               opts?.logger?.error(error);
+              await sleep(1000);
             }
           } finally {
             if (abortListener)

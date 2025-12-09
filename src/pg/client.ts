@@ -1,4 +1,4 @@
-import { Client } from "pg";
+import { Client, escapeIdentifier } from "pg";
 import { TxOBEvent, TxOBProcessorClient } from "../processor";
 
 interface Querier {
@@ -16,7 +16,7 @@ export const createProcessorClient = <EventType extends string>(
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
-      `SELECT id, errors FROM ${table} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1`,
+      `SELECT id, errors FROM ${escapeIdentifier(table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1`,
       [opts.maxErrors],
     );
     return events.rows;
@@ -27,7 +27,7 @@ export const createProcessorClient = <EventType extends string>(
       await fn({
         getEventByIdForUpdateSkipLocked: async (eventId, opts) => {
           const event = await querier.query<TxOBEvent<EventType>>(
-            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${table} WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED`,
+            `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${escapeIdentifier(table)} WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED`,
             [eventId, opts.maxErrors],
           );
           if (event.rowCount === 0) {
@@ -38,7 +38,7 @@ export const createProcessorClient = <EventType extends string>(
         },
         updateEvent: async (event) => {
           await querier.query(
-            `UPDATE ${table} SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
+            `UPDATE ${escapeIdentifier(table)} SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
             [
               event.handler_results,
               event.errors,
@@ -51,7 +51,7 @@ export const createProcessorClient = <EventType extends string>(
       });
       await querier.query("COMMIT");
     } catch (error) {
-      await querier.query("ROLLBACK").catch(() => {});
+      await querier.query("ROLLBACK").catch(() => { });
       throw error;
     }
   },
