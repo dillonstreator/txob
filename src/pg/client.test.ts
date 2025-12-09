@@ -16,7 +16,7 @@ describe("getEventsToProcess", () => {
   it("should execute the correct query", async () => {
     const rows = [1, 2, 3];
     const pgClient = {
-      query: vi.fn<any, any>(() =>
+      query: vi.fn<any>(() =>
         Promise.resolve({
           rows,
         }),
@@ -29,7 +29,7 @@ describe("getEventsToProcess", () => {
     const result = await client.getEventsToProcess(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
-      "SELECT id, errors FROM events WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
+      "SELECT id, errors FROM \"events\" WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
       [opts.maxErrors],
     );
     expect(result).toBe(rows);
@@ -39,24 +39,24 @@ describe("getEventsToProcess", () => {
 describe("transaction", () => {
   it("should begin and commit", async () => {
     const pgClient = {
-      query: vi.fn<any, any>(() => Promise.resolve()),
+      query: vi.fn<any>(() => Promise.resolve()),
     };
     const client = createProcessorClient(pgClient);
-    await client.transaction(async () => {});
+    await client.transaction(async () => { });
     expect(pgClient.query).toHaveBeenCalledTimes(2);
     expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(pgClient.query).toHaveBeenNthCalledWith(2, "COMMIT");
   });
   it("should begin and rollback", async () => {
     const pgClient = {
-      query: vi.fn<any, any>(() => Promise.resolve()),
+      query: vi.fn<any>(() => Promise.resolve()),
     };
     const client = createProcessorClient(pgClient);
     await client
       .transaction(async () => {
         throw new Error("error");
       })
-      .catch(() => {});
+      .catch(() => { });
     expect(pgClient.query).toHaveBeenCalledTimes(2);
     expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(pgClient.query).toHaveBeenNthCalledWith(2, "ROLLBACK");
@@ -66,7 +66,7 @@ describe("transaction", () => {
     it("should execute the correct query", async () => {
       const rows = [1, 2, 3];
       const pgClient = {
-        query: vi.fn<any, any>(() =>
+        query: vi.fn<any>(() =>
           Promise.resolve({
             rows,
             rowCount: rows.length,
@@ -82,7 +82,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM \"events\" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
         [eventId, 6],
       );
       expect(result).toBe(1);
@@ -91,7 +91,7 @@ describe("transaction", () => {
     it("should return null on no rows", async () => {
       const rows = [];
       const pgClient = {
-        query: vi.fn<any, any>(() =>
+        query: vi.fn<any>(() =>
           Promise.resolve({
             rows,
             rowCount: rows.length,
@@ -107,7 +107,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM events WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
+        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM \"events\" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
         [eventId, 5],
       );
       expect(result).toBeNull();
@@ -118,7 +118,7 @@ describe("transaction", () => {
     it("should execute the correct query", async () => {
       const rows = [1, 2, 3];
       const pgClient = {
-        query: vi.fn<any, any>(() =>
+        query: vi.fn<any>(() =>
           Promise.resolve({
             rows,
           }),
@@ -144,7 +144,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "UPDATE events SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5",
+        "UPDATE \"events\" SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5",
         [
           event.handler_results,
           event.errors,
