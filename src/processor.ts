@@ -128,12 +128,12 @@ export const processEvents = async <TxOBEventType extends string>(
           // Potential issue with client configuration on finding unprocessed events
           // Events with maximum allowed errors should not be returned from `getEventsToProcess`
           logger?.warn(
-            "unexpected event with max errors returned from `getEventsToProcess`",
             {
               eventId: unlockedEvent.id,
               errors: unlockedEvent.errors,
               maxErrors,
             },
+            "unexpected event with max errors returned from `getEventsToProcess`",
           );
           return;
         }
@@ -145,9 +145,12 @@ export const processEvents = async <TxOBEventType extends string>(
               { signal, maxErrors },
             );
             if (!lockedEvent) {
-              logger?.debug("skipping locked or already processed event", {
-                eventId: unlockedEvent.id,
-              });
+              logger?.debug(
+                {
+                  eventId: unlockedEvent.id,
+                },
+                "skipping locked or already processed event",
+              );
               return;
             }
 
@@ -155,17 +158,23 @@ export const processEvents = async <TxOBEventType extends string>(
             // that this processor found the event with `getEventsToProcess` and called `getEventByIdForUpdateSkipLocked`
             // `getEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
             if (lockedEvent.processed_at) {
-              logger?.debug("skipping already processed event", {
-                eventId: lockedEvent.id,
-                correlationId: lockedEvent.correlation_id,
-              });
+              logger?.debug(
+                {
+                  eventId: lockedEvent.id,
+                  correlationId: lockedEvent.correlation_id,
+                },
+                "skipping already processed event",
+              );
               return;
             }
             if (lockedEvent.errors >= maxErrors) {
-              logger?.debug("skipping event with maximum errors", {
-                eventId: lockedEvent.id,
-                correlationId: lockedEvent.correlation_id,
-              });
+              logger?.debug(
+                {
+                  eventId: lockedEvent.id,
+                  correlationId: lockedEvent.correlation_id,
+                },
+                "skipping event with maximum errors",
+              );
               return;
             }
 
@@ -173,11 +182,14 @@ export const processEvents = async <TxOBEventType extends string>(
 
             let eventHandlerMap = handlerMap[lockedEvent.type];
             if (!eventHandlerMap) {
-              logger?.warn("missing event handler map", {
-                eventId: lockedEvent.id,
-                type: lockedEvent.type,
-                correlationId: lockedEvent.correlation_id,
-              });
+              logger?.warn(
+                {
+                  eventId: lockedEvent.id,
+                  type: lockedEvent.type,
+                  correlationId: lockedEvent.correlation_id,
+                },
+                "missing event handler map",
+              );
               errored = true;
               lockedEvent.errors = maxErrors;
               eventHandlerMap = {};
@@ -189,20 +201,23 @@ export const processEvents = async <TxOBEventType extends string>(
                 signal,
               }).catch((hookError) => {
                 logger?.error(
-                  "error in onEventProcessingFailed hook for missing handler map",
                   {
                     eventId: lockedEvent.id,
                     error: hookError,
                   },
+                  "error in onEventProcessingFailed hook for missing handler map",
                 );
               });
             }
 
-            logger?.debug(`processing event`, {
-              eventId: lockedEvent.id,
-              type: lockedEvent.type,
-              correlationId: lockedEvent.correlation_id,
-            });
+            logger?.debug(
+              {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                correlationId: lockedEvent.correlation_id,
+              },
+              `processing event`,
+            );
 
             const handlerLimit = pLimit(maxHandlerConcurrency);
             await Promise.allSettled(
@@ -211,21 +226,27 @@ export const processEvents = async <TxOBEventType extends string>(
                   const handlerResults =
                     lockedEvent.handler_results[handlerName] ?? {};
                   if (handlerResults.processed_at) {
-                    logger?.debug("handler already processed", {
-                      eventId: lockedEvent.id,
-                      type: lockedEvent.type,
-                      handlerName,
-                      correlationId: lockedEvent.correlation_id,
-                    });
+                    logger?.debug(
+                      {
+                        eventId: lockedEvent.id,
+                        type: lockedEvent.type,
+                        handlerName,
+                        correlationId: lockedEvent.correlation_id,
+                      },
+                      "handler already processed",
+                    );
                     return;
                   }
                   if (handlerResults.unprocessable_at) {
-                    logger?.debug("handler unprocessable", {
-                      eventId: lockedEvent.id,
-                      type: lockedEvent.type,
-                      handlerName,
-                      correlationId: lockedEvent.correlation_id,
-                    });
+                    logger?.debug(
+                      {
+                        eventId: lockedEvent.id,
+                        type: lockedEvent.type,
+                        handlerName,
+                        correlationId: lockedEvent.correlation_id,
+                      },
+                      "handler unprocessable",
+                    );
                     return;
                   }
 
@@ -234,20 +255,26 @@ export const processEvents = async <TxOBEventType extends string>(
                   try {
                     await handler(lockedEvent, { signal });
                     handlerResults.processed_at = getDate();
-                    logger?.debug("handler succeeded", {
-                      eventId: lockedEvent.id,
-                      type: lockedEvent.type,
-                      handlerName,
-                      correlationId: lockedEvent.correlation_id,
-                    });
+                    logger?.debug(
+                      {
+                        eventId: lockedEvent.id,
+                        type: lockedEvent.type,
+                        handlerName,
+                        correlationId: lockedEvent.correlation_id,
+                      },
+                      "handler succeeded",
+                    );
                   } catch (error) {
-                    logger?.error("handler errored", {
-                      eventId: lockedEvent.id,
-                      type: lockedEvent.type,
-                      handlerName,
-                      error,
-                      correlationId: lockedEvent.correlation_id,
-                    });
+                    logger?.error(
+                      {
+                        eventId: lockedEvent.id,
+                        type: lockedEvent.type,
+                        handlerName,
+                        error,
+                        correlationId: lockedEvent.correlation_id,
+                      },
+                      "handler errored",
+                    );
 
                     if (error instanceof ErrorUnprocessableEventHandler) {
                       handlerResults.unprocessable_at = getDate();
@@ -267,12 +294,12 @@ export const processEvents = async <TxOBEventType extends string>(
                         signal,
                       }).catch((hookError) => {
                         logger?.error(
-                          "error in onEventProcessingFailed hook for unprocessable error",
                           {
                             eventId: lockedEvent.id,
                             handlerName,
                             error: hookError,
                           },
+                          "error in onEventProcessingFailed hook for unprocessable error",
                         );
                       });
                     } else {
@@ -302,11 +329,11 @@ export const processEvents = async <TxOBEventType extends string>(
                   signal,
                 }).catch((hookError) => {
                   logger?.error(
-                    "error in onEventProcessingFailed hook for max errors",
                     {
                       eventId: lockedEvent.id,
                       error: hookError,
                     },
+                    "error in onEventProcessingFailed hook for max errors",
                   );
                 });
               }
@@ -315,13 +342,16 @@ export const processEvents = async <TxOBEventType extends string>(
               lockedEvent.processed_at = getDate();
             }
 
-            logger?.debug("updating event", {
-              eventId: lockedEvent.id,
-              type: lockedEvent.type,
-              lockedEvent,
-              correlationId: lockedEvent.correlation_id,
-              errored,
-            });
+            logger?.debug(
+              {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                lockedEvent,
+                correlationId: lockedEvent.correlation_id,
+                errored,
+              },
+              "updating event",
+            );
 
             // The success of this update is crucial for the processor flow.
             // In the unlikely scenario of a failure to update the event, any handlers that have succeeded
@@ -337,10 +367,13 @@ export const processEvents = async <TxOBEventType extends string>(
             });
           });
         } catch (error) {
-          logger?.error("error processing event", {
-            eventId: unlockedEvent.id,
-            error,
-          });
+          logger?.error(
+            {
+              eventId: unlockedEvent.id,
+              error,
+            },
+            "error processing event",
+          );
         }
       }),
     ),
@@ -499,7 +532,7 @@ export const Processor = (
       opts?.logger?.debug("processor stopped");
 
       if (caughtErr) {
-        opts?.logger?.debug("shutdown error", caughtErr);
+        opts?.logger?.debug({ error: caughtErr }, "shutdown error");
         throw caughtErr;
       }
     },
