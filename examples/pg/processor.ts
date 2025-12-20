@@ -54,12 +54,7 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
     {
       sleepTimeMs: 5000,
       logger: console,
-      onEventProcessingFailed: async ({
-        event,
-        reason,
-        txClient,
-        signal,
-      }) => {
+      onEventProcessingFailed: async ({ event, reason, txClient, signal }) => {
         // Transactionally persist an 'event processing failed' event
         // This hook is called when:
         // - Maximum allowed errors are reached

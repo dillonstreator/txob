@@ -16,7 +16,7 @@
     "type": "git",
     "url": "git://github.com/dillonstreator/txob.git"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "license": "MIT",
   "files": [
@@ -41,8 +41,9 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "npm-run-all clean build:tsc",
+    "build": "npm-run-all clean build:tsc copy:files",
     "build:tsc": "tsc --build",
+    "copy:files": "copyfiles package.json README.md LICENSE dist",
     "prepublishOnly": "yarn build",
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "nuke": "rimraf node_modules dist",
@@ -64,6 +65,7 @@
     "@types/pg": "^8.10.9",
     "@types/retry": "^0.12.5",
     "@vitest/coverage-v8": "^4.0.15",
+    "copyfiles": "^2.4.1",
     "mongodb": "^7.0.0",
     "nodemon": "^3.0.2",
     "npm-run-all": "^4.1.5",
