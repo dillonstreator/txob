@@ -3,6 +3,7 @@ import { getDate } from "./date.js";
 import EventEmitter from "node:events";
 import { sleep } from "./sleep.js";
 import pLimit from "p-limit";
+import { deepClone } from "./clone.js";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -195,7 +196,7 @@ export const processEvents = async <TxOBEventType extends string>(
               eventHandlerMap = {};
 
               await onEventProcessingFailed?.({
-                event: Object.freeze(lockedEvent),
+                event: deepClone(lockedEvent),
                 reason: { type: "missing_handler_map" },
                 txClient,
                 signal,
@@ -284,7 +285,7 @@ export const processEvents = async <TxOBEventType extends string>(
                       });
 
                       await onEventProcessingFailed?.({
-                        event: Object.freeze(lockedEvent),
+                        event: deepClone(lockedEvent),
                         reason: {
                           type: "unprocessable_error",
                           handlerName,
@@ -323,7 +324,7 @@ export const processEvents = async <TxOBEventType extends string>(
                 lockedEvent.backoff_until = null;
 
                 await onEventProcessingFailed?.({
-                  event: Object.freeze(lockedEvent),
+                  event: deepClone(lockedEvent),
                   reason: { type: "max_errors_reached" },
                   txClient,
                   signal,
