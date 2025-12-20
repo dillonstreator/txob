@@ -9,12 +9,10 @@ import { migrate, type EventType, eventTypes } from "./server.js";
 import dotenv from "dotenv";
 dotenv.config();
 
-const { Client } = pg;
-
 let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
 
 (async () => {
-  const client = new Client({
+  const client = new pg.Client({
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,

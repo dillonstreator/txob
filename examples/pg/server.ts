@@ -1,5 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import pg from "pg";
 import dotenv from "dotenv";
 import gracefulShutdown from "http-graceful-shutdown";
@@ -95,7 +97,9 @@ const main = async (): Promise<void> => {
   gracefulShutdown(server);
 };
 
-if (import.meta.url === new URL(process.argv[1], import.meta.url).href) {
+const currentFile = fileURLToPath(import.meta.url);
+const mainFile = resolve(process.argv[1]);
+if (currentFile === mainFile) {
   await main().catch((err) => {
     console.error(err);
     process.exit(1);

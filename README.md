@@ -64,7 +64,7 @@ Let's look at an example of an HTTP API that allows a user to be invited where a
 ```ts
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { Client } from "pg";
+import pg from "pg";
 import gracefulShutdown from "http-graceful-shutdown";
 import { EventProcessor, ErrorUnprocessableEventHandler } from "txob";
 import { createProcessorClient } from "txob/pg";
@@ -77,7 +77,7 @@ const eventTypes = {
 
 type EventType = keyof typeof eventTypes;
 
-const client = new Client({
+const client = new pg.Client({
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
   database: process.env.POSTGRES_DB,
@@ -122,11 +122,6 @@ const processor = EventProcessor(
       // - Maximum allowed errors are reached
       // - An unprocessable error is encountered (ErrorUnprocessableEventHandler)
       // - Event handler map is missing for the event type
-
-      // Use the abort signal for cleanup during graceful shutdown
-      if (signal?.aborted) {
-        return;
-      }
 
       const reasonData: Record<string, unknown> = {
         failedEventId: failedEvent.id,
