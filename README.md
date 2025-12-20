@@ -33,7 +33,19 @@
 - `backoff_until` Date nullable
 - `processed_at` Date nullable
 
-`txob` exposes an optionally configurable interface into event processing with control over maximum allowed errors, backoff calculation on error, event update retrying, and logging.
+`txob` exposes an optionally configurable interface into event processing with control over maximum allowed errors, backoff calculation on error, event update retrying, logging, and transactional event creation when processing fails.
+
+### Event Processing Failed Hook
+
+When an event fails to process (maximum errors reached, unprocessable error, or missing handler), you can optionally provide an `onEventProcessingFailed` hook that will be called transactionally. This allows you to persist a failure event within the same transaction, ensuring data consistency. The hook receives:
+
+- `failedEvent`: The event that failed processing
+- `reason`: An object indicating why processing failed:
+  - `{ type: "max_errors_reached" }` - Event exceeded maximum retry attempts
+  - `{ type: "unprocessable_error", handlerName: string, error: Error }` - Handler threw `ErrorUnprocessableEventHandler`
+  - `{ type: "missing_handler_map" }` - No handler map exists for the event type
+- `txClient`: The transactional client for creating events within the same transaction
+- `signal`: Optional AbortSignal for graceful shutdown handling
 
 As per the 'transactional outbox specification', you should ensure your events are transactionally persisted alongside their related data mutations.
 
@@ -54,11 +66,12 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import gracefulShutdown from "http-graceful-shutdown";
-import { EventProcessor } from "txob";
+import { EventProcessor, ErrorUnprocessableEventHandler } from "txob";
 import { createProcessorClient } from "txob/pg";
 
 const eventTypes = {
   UserCreated: "UserCreated",
+  EventProcessingFailed: "EventProcessingFailed",
   // other event types
 } as const;
 
@@ -85,13 +98,56 @@ const processor = EventProcessor(
         // use the AbortSignal `signal` (aborted when EventProcessor#stop is called) to perform quick cleanup
         // during graceful shutdown enabling the processor to
         // save handler result updates to the event ASAP
+        
+        // To mark a handler as unprocessable (will trigger onEventProcessingFailed hook):
+        // throw new ErrorUnprocessableEventHandler(new Error("reason"));
       },
       publish: async (event) => {
         // publish to event bus
       },
       // other handler that should be executed when a `UserCreated` event is saved
     },
+    EventProcessingFailed: {
+      // Optional: add handlers for EventProcessingFailed events if needed
+      // For example, you might want to send alerts or log to external systems
+    },
     // other event types
+  },
+  {
+    onEventProcessingFailed: async ({ failedEvent, reason, txClient, signal }) => {
+      // Transactionally persist an 'event processing failed' event
+      // This hook is called when:
+      // - Maximum allowed errors are reached
+      // - An unprocessable error is encountered (ErrorUnprocessableEventHandler)
+      // - Event handler map is missing for the event type
+      
+      // Use the abort signal for cleanup during graceful shutdown
+      if (signal?.aborted) {
+        return;
+      }
+      
+      const reasonData: Record<string, unknown> = {
+        failedEventId: failedEvent.id,
+        failedEventType: failedEvent.type,
+        reason: reason.type,
+      };
+      
+      // Add additional context based on the failure reason
+      if (reason.type === "unprocessable_error") {
+        reasonData.handlerName = reason.handlerName;
+        reasonData.error = reason.error.message;
+      }
+      
+      await txClient.createEvent({
+        id: randomUUID(),
+        timestamp: new Date(),
+        type: eventTypes.EventProcessingFailed,
+        data: reasonData,
+        correlation_id: failedEvent.correlation_id,
+        handler_results: {},
+        errors: 0,
+      });
+    },
   }
 )
 processor.start();

@@ -84,6 +84,27 @@ export const createProcessorClient = <EventType extends string>(
               },
             );
         },
+        createEvent: async (event) => {
+          await mongo
+            .db(db)
+            .collection(collection)
+            .insertOne(
+              {
+                id: event.id,
+                timestamp: event.timestamp,
+                type: event.type,
+                data: event.data,
+                correlation_id: event.correlation_id,
+                handler_results: event.handler_results,
+                errors: event.errors,
+                processed_at: null,
+                backoff_until: null,
+              },
+              {
+                session,
+              },
+            );
+        },
       });
     });
   },

@@ -5,8 +5,9 @@ import dotenv from "dotenv";
 import gracefulShutdown from "http-graceful-shutdown";
 dotenv.config();
 
-const eventTypes = {
+export const eventTypes = {
   ResourceSaved: "ResourceSaved",
+  EventProcessingFailed: "EventProcessingFailed",
 } as const;
 
 export type EventType = keyof typeof eventTypes;

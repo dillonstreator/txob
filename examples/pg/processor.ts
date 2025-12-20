@@ -1,10 +1,11 @@
 import { Client } from "pg";
+import { randomUUID } from "node:crypto";
 import {
   ErrorUnprocessableEventHandler,
   EventProcessor,
 } from "../../src/processor";
 import { createProcessorClient } from "../../src/pg/client";
-import { migrate, type EventType } from "./server";
+import { migrate, type EventType, eventTypes } from "./server";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -45,8 +46,58 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           return;
         },
       },
+      EventProcessingFailed: {
+        // Optional: add handlers for EventProcessingFailed events if needed
+        // For example, you might want to send alerts or log to external systems
+      },
     },
-    { sleepTimeMs: 5000, logger: console },
+    {
+      sleepTimeMs: 5000,
+      logger: console,
+      onEventProcessingFailed: async ({ failedEvent, reason, txClient, signal }) => {
+        // Transactionally persist an 'event processing failed' event
+        // This hook is called when:
+        // - Maximum allowed errors are reached
+        // - An unprocessable error is encountered
+        // - Event handler map is missing for the event type
+        
+        // Use the abort signal for cleanup during graceful shutdown
+        if (signal?.aborted) {
+          return;
+        }
+        
+        const reasonData: Record<string, unknown> = {};
+        if (reason.type === "max_errors_reached") {
+          reasonData.reason = "max_errors_reached";
+        } else if (reason.type === "unprocessable_error") {
+          reasonData.reason = "unprocessable_error";
+          reasonData.handlerName = reason.handlerName;
+          reasonData.error = reason.error.message;
+        } else if (reason.type === "missing_handler_map") {
+          reasonData.reason = "missing_handler_map";
+        }
+
+        await txClient.createEvent({
+          id: randomUUID(),
+          timestamp: new Date(),
+          type: eventTypes.EventProcessingFailed,
+          data: {
+            failedEventId: failedEvent.id,
+            failedEventType: failedEvent.type,
+            failedEventCorrelationId: failedEvent.correlation_id,
+            ...reasonData,
+          },
+          correlation_id: failedEvent.correlation_id,
+          handler_results: {},
+          errors: 0,
+        });
+
+        console.log("Event processing failed event created", {
+          failedEventId: failedEvent.id,
+          reason: reason.type,
+        });
+      },
+    },
   );
   processor.start();
 })();

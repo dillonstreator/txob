@@ -59,6 +59,7 @@ export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
     opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
   updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
+  createEvent(event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">): Promise<void>;
 }
 
 export const defaultBackoff = (errorCount: number): Date => {
@@ -71,20 +72,31 @@ export const defaultBackoff = (errorCount: number): Date => {
 };
 const defaultMaxErrors = 5;
 
-type TxOBProcessEventsOpts = {
+export type EventProcessingFailedReason =
+  | { type: "max_errors_reached" }
+  | { type: "unprocessable_error"; handlerName: string; error: Error }
+  | { type: "missing_handler_map" };
+
+type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
   backoff: (count: number) => Date;
   retryOpts?: RetryOpts;
   signal?: AbortSignal;
   logger?: Logger;
+  onEventProcessingFailed?: (opts: {
+    failedEvent: TxOBEvent<TxOBEventType>;
+    reason: EventProcessingFailedReason;
+    txClient: TxOBTransactionProcessorClient<TxOBEventType>;
+    signal?: AbortSignal;
+  }) => Promise<void>;
 };
 
 export const processEvents = async <TxOBEventType extends string>(
   client: TxOBProcessorClient<TxOBEventType>,
   handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-  opts?: Partial<TxOBProcessEventsOpts>,
+  opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>,
 ): Promise<void> => {
-  const _opts: TxOBProcessEventsOpts = {
+  const _opts: TxOBProcessEventsOpts<TxOBEventType> = {
     maxErrors: defaultMaxErrors,
     backoff: defaultBackoff,
     ...opts,
@@ -155,6 +167,18 @@ export const processEvents = async <TxOBEventType extends string>(
           errored = true;
           lockedEvent.errors = _opts.maxErrors;
           eventHandlerMap = {};
+
+          await _opts.onEventProcessingFailed?.({
+            failedEvent: lockedEvent,
+            reason: { type: "missing_handler_map" },
+            txClient,
+            signal: _opts.signal,
+          }).catch(hookError => {
+            _opts.logger?.error("error in onEventProcessingFailed hook for missing handler map", {
+              eventId: lockedEvent.id,
+              error: hookError,
+            })
+          });
         }
 
         _opts.logger?.debug(`processing event`, {
@@ -217,6 +241,23 @@ export const processEvents = async <TxOBEventType extends string>(
                     error: error.message ?? error,
                     timestamp: getDate(),
                   });
+
+                  await _opts.onEventProcessingFailed?.({
+                    failedEvent: lockedEvent,
+                    reason: {
+                      type: "unprocessable_error",
+                      handlerName,
+                      error: error.error,
+                    },
+                    txClient,
+                    signal: _opts.signal,
+                  }).catch(hookError => {
+                    _opts.logger?.error("error in onEventProcessingFailed hook for unprocessable error", {
+                      eventId: lockedEvent.id,
+                      handlerName,
+                      error: hookError,
+                    })
+                  });
                 } else {
                   errored = true;
                   handlerResults.errors?.push({
@@ -239,6 +280,18 @@ export const processEvents = async <TxOBEventType extends string>(
           lockedEvent.backoff_until = _opts.backoff(lockedEvent.errors);
           if (lockedEvent.errors === _opts.maxErrors) {
             lockedEvent.backoff_until = null;
+
+            await _opts.onEventProcessingFailed?.({
+              failedEvent: lockedEvent,
+              reason: { type: "max_errors_reached" },
+              txClient,
+              signal: _opts.signal,
+            }).catch(hookError => {
+              _opts.logger?.error("error in onEventProcessingFailed hook for max errors", {
+                eventId: lockedEvent.id,
+                error: hookError,
+              })
+            });
           }
         } else {
           lockedEvent.backoff_until = null;
@@ -299,7 +352,7 @@ export interface Logger {
 export const EventProcessor = <TxOBEventType extends string>(
   client: TxOBProcessorClient<TxOBEventType>,
   handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-  opts?: Omit<Partial<TxOBProcessEventsOpts>, "signal"> & {
+  opts?: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
     sleepTimeMs?: number;
   },
 ) => {

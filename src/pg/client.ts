@@ -48,6 +48,20 @@ export const createProcessorClient = <EventType extends string>(
             ],
           );
         },
+        createEvent: async (event) => {
+          await querier.query(
+            `INSERT INTO ${escapeIdentifier(table)} (id, timestamp, type, data, correlation_id, handler_results, errors) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              event.id,
+              event.timestamp,
+              event.type,
+              event.data,
+              event.correlation_id,
+              event.handler_results,
+              event.errors,
+            ],
+          );
+        },
       });
       await querier.query("COMMIT");
     } catch (error) {

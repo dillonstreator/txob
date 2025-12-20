@@ -1,13 +1,14 @@
 {
   "name": "txob",
-  "description": "generic transactional outbox event processor with graceful shutdown and horizontal scalability",
+  "description": "transactional outbox event processor with graceful shutdown and horizontal scalability",
   "keywords": [
-    "DDD",
     "outbox pattern",
     "transactional outbox",
     "event processor",
+    "DDD",
+    "microservices",
     "graceful shutdown",
-    "microservices"
+    "horizontal scalability"
   ],
   "author": "Dillon Streator <dillonstreator@gmail.com>",
   "homepage": "https://github.com/dillonstreator/txob",
@@ -15,7 +16,7 @@
     "type": "git",
     "url": "git://github.com/dillonstreator/txob.git"
   },
-  "version": "0.0.22",
+  "version": "0.0.23",
   "license": "MIT",
   "files": [
     "dist",

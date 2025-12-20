@@ -12,6 +12,7 @@ import { sleep } from "./sleep";
 const mockTxClient = {
   getEventByIdForUpdateSkipLocked: vi.fn(),
   updateEvent: vi.fn(),
+  createEvent: vi.fn(),
 };
 const mockClient = {
   getEventsToProcess: vi.fn(),
