@@ -80,8 +80,7 @@ const defaultMaxHandlerConcurrency = 10;
 
 export type EventProcessingFailedReason =
   | { type: "max_errors_reached" }
-  | { type: "unprocessable_error"; handlerName: string; error: Error }
-  | { type: "missing_handler_map" };
+  | { type: "unprocessable_error"; handlerName: string; error: Error };
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
@@ -97,6 +96,38 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
     txClient: TxOBTransactionProcessorClient<TxOBEventType>;
     signal?: AbortSignal;
   }) => Promise<void>;
+};
+
+/**
+ * Handles errors from the onEventProcessingFailed hook.
+ * Always re-throws the error to fail the transaction and maintain integrity.
+ */
+const handleHookError = (
+  hookError: unknown,
+  context: {
+    eventId: string;
+    reason: EventProcessingFailedReason;
+    handlerName?: string;
+    logger?: Logger;
+  },
+): never => {
+  const errorMessage =
+    context.reason.type === "unprocessable_error"
+      ? "error in onEventProcessingFailed hook for unprocessable error"
+      : "error in onEventProcessingFailed hook for max errors";
+
+  context.logger?.error(
+    {
+      eventId: context.eventId,
+      handlerName: context.handlerName,
+      reason: context.reason,
+      error: hookError,
+    },
+    errorMessage,
+  );
+
+  // Always fail the transaction to maintain integrity
+  throw hookError;
 };
 
 export const processEvents = async <TxOBEventType extends string>(
@@ -194,21 +225,6 @@ export const processEvents = async <TxOBEventType extends string>(
               errored = true;
               lockedEvent.errors = maxErrors;
               eventHandlerMap = {};
-
-              await onEventProcessingFailed?.({
-                event: deepClone(lockedEvent),
-                reason: { type: "missing_handler_map" },
-                txClient,
-                signal,
-              }).catch((hookError) => {
-                logger?.error(
-                  {
-                    eventId: lockedEvent.id,
-                    error: hookError,
-                  },
-                  "error in onEventProcessingFailed hook for missing handler map",
-                );
-              });
             }
 
             logger?.debug(
@@ -284,25 +300,31 @@ export const processEvents = async <TxOBEventType extends string>(
                         timestamp: getDate(),
                       });
 
-                      await onEventProcessingFailed?.({
-                        event: deepClone(lockedEvent),
-                        reason: {
-                          type: "unprocessable_error",
-                          handlerName,
-                          error: error.error,
-                        },
-                        txClient,
-                        signal,
-                      }).catch((hookError) => {
-                        logger?.error(
-                          {
+                      if (onEventProcessingFailed) {
+                        try {
+                          await onEventProcessingFailed({
+                            event: deepClone(lockedEvent),
+                            reason: {
+                              type: "unprocessable_error",
+                              handlerName,
+                              error: error.error,
+                            },
+                            txClient,
+                            signal,
+                          });
+                        } catch (hookError) {
+                          handleHookError(hookError, {
                             eventId: lockedEvent.id,
+                            reason: {
+                              type: "unprocessable_error",
+                              handlerName,
+                              error: error.error,
+                            },
                             handlerName,
-                            error: hookError,
-                          },
-                          "error in onEventProcessingFailed hook for unprocessable error",
-                        );
-                      });
+                            logger,
+                          });
+                        }
+                      }
                     } else {
                       errored = true;
                       handlerResults.errors?.push({
@@ -323,20 +345,22 @@ export const processEvents = async <TxOBEventType extends string>(
               if (lockedEvent.errors === maxErrors) {
                 lockedEvent.backoff_until = null;
 
-                await onEventProcessingFailed?.({
-                  event: deepClone(lockedEvent),
-                  reason: { type: "max_errors_reached" },
-                  txClient,
-                  signal,
-                }).catch((hookError) => {
-                  logger?.error(
-                    {
+                if (onEventProcessingFailed) {
+                  try {
+                    await onEventProcessingFailed({
+                      event: deepClone(lockedEvent),
+                      reason: { type: "max_errors_reached" },
+                      txClient,
+                      signal,
+                    });
+                  } catch (hookError) {
+                    handleHookError(hookError, {
                       eventId: lockedEvent.id,
-                      error: hookError,
-                    },
-                    "error in onEventProcessingFailed hook for max errors",
-                  );
-                });
+                      reason: { type: "max_errors_reached" },
+                      logger,
+                    });
+                  }
+                }
               }
             } else {
               lockedEvent.backoff_until = null;
