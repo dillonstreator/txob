@@ -1,7 +1,8 @@
-import { retryable, RetryOpts } from "./retry";
-import { getDate } from "./date";
+import { retryable, RetryOpts } from "./retry.js";
+import { getDate } from "./date.js";
 import EventEmitter from "node:events";
-import { sleep } from "./sleep";
+import { sleep } from "./sleep.js";
+import pLimit from "p-limit";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -37,7 +38,7 @@ export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
   }
 >;
 
-type TxOBProcessorClientOpts = {
+export type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
   maxErrors: number;
 };
@@ -59,7 +60,9 @@ export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
     opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
   updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
-  createEvent(event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">): Promise<void>;
+  createEvent(
+    event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">,
+  ): Promise<void>;
 }
 
 export const defaultBackoff = (errorCount: number): Date => {
@@ -71,6 +74,8 @@ export const defaultBackoff = (errorCount: number): Date => {
   return retryTimestamp;
 };
 const defaultMaxErrors = 5;
+const defaultMaxEventConcurrency = 5;
+const defaultMaxHandlerConcurrency = 10;
 
 export type EventProcessingFailedReason =
   | { type: "max_errors_reached" }
@@ -83,6 +88,8 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   retryOpts?: RetryOpts;
   signal?: AbortSignal;
   logger?: Logger;
+  maxEventConcurrency?: number;
+  maxHandlerConcurrency?: number;
   onEventProcessingFailed?: (opts: {
     failedEvent: TxOBEvent<TxOBEventType>;
     reason: EventProcessingFailedReason;
@@ -96,235 +103,248 @@ export const processEvents = async <TxOBEventType extends string>(
   handlerMap: TxOBEventHandlerMap<TxOBEventType>,
   opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>,
 ): Promise<void> => {
-  const _opts: TxOBProcessEventsOpts<TxOBEventType> = {
-    maxErrors: defaultMaxErrors,
-    backoff: defaultBackoff,
-    ...opts,
-  };
+  const {
+    maxErrors = defaultMaxErrors,
+    backoff = defaultBackoff,
+    maxEventConcurrency = defaultMaxEventConcurrency,
+    maxHandlerConcurrency = defaultMaxHandlerConcurrency,
+    logger,
+    signal,
+    onEventProcessingFailed,
+    retryOpts,
+  } = opts ?? {};
 
-  const events = await client.getEventsToProcess(_opts);
-  _opts.logger?.debug(`found ${events.length} events to process`);
+  const events = await client.getEventsToProcess({ maxErrors, signal });
+  logger?.debug(`found ${events.length} events to process`);
 
-  // TODO: consider concurrently processing events with max concurrency configuration
-  for (const unlockedEvent of events) {
-    if (_opts.signal?.aborted) {
-      return;
-    }
-    if (unlockedEvent.errors >= _opts.maxErrors) {
-      // Potential issue with client configuration on finding unprocessed events
-      // Events with maximum allowed errors should not be returned from `getEventsToProcess`
-      _opts.logger?.warn(
-        "unexpected event with max errors returned from `getEventsToProcess`",
-        {
-          eventId: unlockedEvent.id,
-          errors: unlockedEvent.errors,
-          maxErrors: _opts.maxErrors,
-        },
-      );
-      continue;
-    }
-
-    try {
-      await client.transaction(async (txClient) => {
-        const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
-          unlockedEvent.id,
-          { signal: _opts.signal, maxErrors: _opts.maxErrors },
-        );
-        if (!lockedEvent) {
-          _opts.logger?.debug("skipping locked or already processed event", {
-            eventId: unlockedEvent.id,
-          });
+  const eventLimit = pLimit(maxEventConcurrency);
+  await Promise.allSettled(
+    events.map((unlockedEvent) =>
+      eventLimit(async () => {
+        if (signal?.aborted) {
           return;
         }
-
-        // While unlikely, the following two conditions are possible if a concurrent processor finished processing this event or reaching maximum errors between the time
-        // that this processor found the event with `getEventsToProcess` and called `getEventByIdForUpdateSkipLocked`
-        // `getEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
-        if (lockedEvent.processed_at) {
-          _opts.logger?.debug("skipping already processed event", {
-            eventId: lockedEvent.id,
-            correlationId: lockedEvent.correlation_id,
-          });
-          return;
-        }
-        if (lockedEvent.errors >= _opts.maxErrors) {
-          _opts.logger?.debug("skipping event with maximum errors", {
-            eventId: lockedEvent.id,
-            correlationId: lockedEvent.correlation_id,
-          });
-          return;
-        }
-
-        let errored = false;
-
-        let eventHandlerMap = handlerMap[lockedEvent.type];
-        if (!eventHandlerMap) {
-          _opts.logger?.warn("missing event handler map", {
-            eventId: lockedEvent.id,
-            type: lockedEvent.type,
-            correlationId: lockedEvent.correlation_id,
-          });
-          errored = true;
-          lockedEvent.errors = _opts.maxErrors;
-          eventHandlerMap = {};
-
-          await _opts.onEventProcessingFailed?.({
-            failedEvent: lockedEvent,
-            reason: { type: "missing_handler_map" },
-            txClient,
-            signal: _opts.signal,
-          }).catch(hookError => {
-            _opts.logger?.error("error in onEventProcessingFailed hook for missing handler map", {
-              eventId: lockedEvent.id,
-              error: hookError,
-            })
-          });
-        }
-
-        _opts.logger?.debug(`processing event`, {
-          eventId: lockedEvent.id,
-          type: lockedEvent.type,
-          correlationId: lockedEvent.correlation_id,
-        });
-
-        // TODO: consider concurrently processing events handler with max concurrency configuration
-        //
-        // handlers are already concurrently executed but a configuration for max concurrency could be
-        // nice especially if a client has many handlers for a given event type
-        await Promise.allSettled(
-          Object.entries(eventHandlerMap).map(
-            async ([handlerName, handler]): Promise<void> => {
-              const handlerResults =
-                lockedEvent.handler_results[handlerName] ?? {};
-              if (handlerResults.processed_at) {
-                _opts.logger?.debug("handler already processed", {
-                  eventId: lockedEvent.id,
-                  type: lockedEvent.type,
-                  handlerName,
-                  correlationId: lockedEvent.correlation_id,
-                });
-                return;
-              }
-              if (handlerResults.unprocessable_at) {
-                _opts.logger?.debug("handler unprocessable", {
-                  eventId: lockedEvent.id,
-                  type: lockedEvent.type,
-                  handlerName,
-                  correlationId: lockedEvent.correlation_id,
-                });
-                return;
-              }
-
-              handlerResults.errors ??= [];
-
-              try {
-                await handler(lockedEvent, { signal: _opts.signal });
-                handlerResults.processed_at = getDate();
-                _opts.logger?.debug("handler succeeded", {
-                  eventId: lockedEvent.id,
-                  type: lockedEvent.type,
-                  handlerName,
-                  correlationId: lockedEvent.correlation_id,
-                });
-              } catch (error) {
-                _opts.logger?.error("handler errored", {
-                  eventId: lockedEvent.id,
-                  type: lockedEvent.type,
-                  handlerName,
-                  error,
-                  correlationId: lockedEvent.correlation_id,
-                });
-
-                if (error instanceof ErrorUnprocessableEventHandler) {
-                  handlerResults.unprocessable_at = getDate();
-                  handlerResults.errors?.push({
-                    error: error.message ?? error,
-                    timestamp: getDate(),
-                  });
-
-                  await _opts.onEventProcessingFailed?.({
-                    failedEvent: lockedEvent,
-                    reason: {
-                      type: "unprocessable_error",
-                      handlerName,
-                      error: error.error,
-                    },
-                    txClient,
-                    signal: _opts.signal,
-                  }).catch(hookError => {
-                    _opts.logger?.error("error in onEventProcessingFailed hook for unprocessable error", {
-                      eventId: lockedEvent.id,
-                      handlerName,
-                      error: hookError,
-                    })
-                  });
-                } else {
-                  errored = true;
-                  handlerResults.errors?.push({
-                    error: (error as Error)?.message ?? error,
-                    timestamp: getDate(),
-                  });
-                }
-              }
-
-              lockedEvent.handler_results[handlerName] = handlerResults;
+        if (unlockedEvent.errors >= maxErrors) {
+          // Potential issue with client configuration on finding unprocessed events
+          // Events with maximum allowed errors should not be returned from `getEventsToProcess`
+          logger?.warn(
+            "unexpected event with max errors returned from `getEventsToProcess`",
+            {
+              eventId: unlockedEvent.id,
+              errors: unlockedEvent.errors,
+              maxErrors,
             },
-          ),
-        );
-
-        if (errored) {
-          lockedEvent.errors = Math.min(
-            lockedEvent.errors + 1,
-            _opts.maxErrors,
           );
-          lockedEvent.backoff_until = _opts.backoff(lockedEvent.errors);
-          if (lockedEvent.errors === _opts.maxErrors) {
-            lockedEvent.backoff_until = null;
-
-            await _opts.onEventProcessingFailed?.({
-              failedEvent: lockedEvent,
-              reason: { type: "max_errors_reached" },
-              txClient,
-              signal: _opts.signal,
-            }).catch(hookError => {
-              _opts.logger?.error("error in onEventProcessingFailed hook for max errors", {
-                eventId: lockedEvent.id,
-                error: hookError,
-              })
-            });
-          }
-        } else {
-          lockedEvent.backoff_until = null;
-          lockedEvent.processed_at = getDate();
+          return;
         }
 
-        _opts.logger?.debug("updating event", {
-          eventId: lockedEvent.id,
-          type: lockedEvent.type,
-          lockedEvent,
-          correlationId: lockedEvent.correlation_id,
-          errored,
-        });
+        try {
+          await client.transaction(async (txClient) => {
+            const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
+              unlockedEvent.id,
+              { signal, maxErrors },
+            );
+            if (!lockedEvent) {
+              logger?.debug("skipping locked or already processed event", {
+                eventId: unlockedEvent.id,
+              });
+              return;
+            }
 
-        // The success of this update is crucial for the processor flow.
-        // In the unlikely scenario of a failure to update the event, any handlers that have succeeded
-        // during this iteration will be reinvoked in the subsequent processor tick.
-        await retryable(() => txClient.updateEvent(lockedEvent), {
-          retries: 3,
-          factor: 2,
-          minTimeout: 100,
-          maxTimeout: 2500,
-          randomize: true,
-          ...(_opts.retryOpts ?? {}),
-        });
-      });
-    } catch (error) {
-      _opts.logger?.error("error processing event", {
-        eventId: unlockedEvent.id,
-        error,
-      });
-    }
-  }
+            // While unlikely, the following two conditions are possible if a concurrent processor finished processing this event or reaching maximum errors between the time
+            // that this processor found the event with `getEventsToProcess` and called `getEventByIdForUpdateSkipLocked`
+            // `getEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
+            if (lockedEvent.processed_at) {
+              logger?.debug("skipping already processed event", {
+                eventId: lockedEvent.id,
+                correlationId: lockedEvent.correlation_id,
+              });
+              return;
+            }
+            if (lockedEvent.errors >= maxErrors) {
+              logger?.debug("skipping event with maximum errors", {
+                eventId: lockedEvent.id,
+                correlationId: lockedEvent.correlation_id,
+              });
+              return;
+            }
+
+            let errored = false;
+
+            let eventHandlerMap = handlerMap[lockedEvent.type];
+            if (!eventHandlerMap) {
+              logger?.warn("missing event handler map", {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                correlationId: lockedEvent.correlation_id,
+              });
+              errored = true;
+              lockedEvent.errors = maxErrors;
+              eventHandlerMap = {};
+
+              await onEventProcessingFailed?.({
+                failedEvent: lockedEvent,
+                reason: { type: "missing_handler_map" },
+                txClient,
+                signal,
+              }).catch((hookError) => {
+                logger?.error(
+                  "error in onEventProcessingFailed hook for missing handler map",
+                  {
+                    eventId: lockedEvent.id,
+                    error: hookError,
+                  },
+                );
+              });
+            }
+
+            logger?.debug(`processing event`, {
+              eventId: lockedEvent.id,
+              type: lockedEvent.type,
+              correlationId: lockedEvent.correlation_id,
+            });
+
+            const handlerLimit = pLimit(maxHandlerConcurrency);
+            await Promise.allSettled(
+              Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
+                handlerLimit(async (): Promise<void> => {
+                  const handlerResults =
+                    lockedEvent.handler_results[handlerName] ?? {};
+                  if (handlerResults.processed_at) {
+                    logger?.debug("handler already processed", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                    return;
+                  }
+                  if (handlerResults.unprocessable_at) {
+                    logger?.debug("handler unprocessable", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                    return;
+                  }
+
+                  handlerResults.errors ??= [];
+
+                  try {
+                    await handler(lockedEvent, { signal });
+                    handlerResults.processed_at = getDate();
+                    logger?.debug("handler succeeded", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                  } catch (error) {
+                    logger?.error("handler errored", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      error,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+
+                    if (error instanceof ErrorUnprocessableEventHandler) {
+                      handlerResults.unprocessable_at = getDate();
+                      handlerResults.errors?.push({
+                        error: error.message ?? error,
+                        timestamp: getDate(),
+                      });
+
+                      await onEventProcessingFailed?.({
+                        failedEvent: lockedEvent,
+                        reason: {
+                          type: "unprocessable_error",
+                          handlerName,
+                          error: error.error,
+                        },
+                        txClient,
+                        signal,
+                      }).catch((hookError) => {
+                        logger?.error(
+                          "error in onEventProcessingFailed hook for unprocessable error",
+                          {
+                            eventId: lockedEvent.id,
+                            handlerName,
+                            error: hookError,
+                          },
+                        );
+                      });
+                    } else {
+                      errored = true;
+                      handlerResults.errors?.push({
+                        error: (error as Error)?.message ?? error,
+                        timestamp: getDate(),
+                      });
+                    }
+                  }
+
+                  lockedEvent.handler_results[handlerName] = handlerResults;
+                }),
+              ),
+            );
+
+            if (errored) {
+              lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
+              lockedEvent.backoff_until = backoff(lockedEvent.errors);
+              if (lockedEvent.errors === maxErrors) {
+                lockedEvent.backoff_until = null;
+
+                await onEventProcessingFailed?.({
+                  failedEvent: lockedEvent,
+                  reason: { type: "max_errors_reached" },
+                  txClient,
+                  signal,
+                }).catch((hookError) => {
+                  logger?.error(
+                    "error in onEventProcessingFailed hook for max errors",
+                    {
+                      eventId: lockedEvent.id,
+                      error: hookError,
+                    },
+                  );
+                });
+              }
+            } else {
+              lockedEvent.backoff_until = null;
+              lockedEvent.processed_at = getDate();
+            }
+
+            logger?.debug("updating event", {
+              eventId: lockedEvent.id,
+              type: lockedEvent.type,
+              lockedEvent,
+              correlationId: lockedEvent.correlation_id,
+              errored,
+            });
+
+            // The success of this update is crucial for the processor flow.
+            // In the unlikely scenario of a failure to update the event, any handlers that have succeeded
+            // during this iteration will be reinvoked in the subsequent processor tick.
+            // This is why the processor is guaranteed for 'at least once' processing.
+            await retryable(() => txClient.updateEvent(lockedEvent), {
+              retries: 3,
+              factor: 2,
+              minTimeout: 100,
+              maxTimeout: 2500,
+              randomize: true,
+              ...retryOpts,
+            });
+          });
+        } catch (error) {
+          logger?.error("error processing event", {
+            eventId: unlockedEvent.id,
+            error,
+          });
+        }
+      }),
+    ),
+  );
 };
 
 /**

@@ -1,18 +1,18 @@
-import { Client } from "pg";
+import pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
   ErrorUnprocessableEventHandler,
   EventProcessor,
-} from "../../src/processor";
-import { createProcessorClient } from "../../src/pg/client";
-import { migrate, type EventType, eventTypes } from "./server";
+} from "../../src/processor.js";
+import { createProcessorClient } from "../../src/pg/client.js";
+import { migrate, type EventType, eventTypes } from "./server.js";
 import dotenv from "dotenv";
 dotenv.config();
 
 let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
 
 (async () => {
-  const client = new Client({
+  const client = new pg.Client({
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
@@ -54,18 +54,23 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
     {
       sleepTimeMs: 5000,
       logger: console,
-      onEventProcessingFailed: async ({ failedEvent, reason, txClient, signal }) => {
+      onEventProcessingFailed: async ({
+        failedEvent,
+        reason,
+        txClient,
+        signal,
+      }) => {
         // Transactionally persist an 'event processing failed' event
         // This hook is called when:
         // - Maximum allowed errors are reached
         // - An unprocessable error is encountered
         // - Event handler map is missing for the event type
-        
+
         // Use the abort signal for cleanup during graceful shutdown
         if (signal?.aborted) {
           return;
         }
-        
+
         const reasonData: Record<string, unknown> = {};
         if (reason.type === "max_errors_reached") {
           reasonData.reason = "max_errors_reached";

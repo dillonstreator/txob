@@ -1,5 +1,10 @@
 import { Client, escapeIdentifier } from "pg";
-import { TxOBEvent, TxOBProcessorClient } from "../processor";
+import type {
+  TxOBEvent,
+  TxOBProcessorClient,
+  TxOBProcessorClientOpts,
+  TxOBTransactionProcessorClient,
+} from "../processor.js";
 
 interface Querier {
   query: Client["query"];
@@ -11,8 +16,10 @@ interface Querier {
 export const createProcessorClient = <EventType extends string>(
   querier: Querier,
   table: string = "events",
-): TxOBProcessorClient<EventType> => ({
-  getEventsToProcess: async (opts) => {
+): TxOBProcessorClient<EventType> => {
+  const getEventsToProcess = async (
+    opts: TxOBProcessorClientOpts,
+  ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
@@ -20,12 +27,20 @@ export const createProcessorClient = <EventType extends string>(
       [opts.maxErrors],
     );
     return events.rows;
-  },
-  transaction: async (fn) => {
+  };
+
+  const transaction: TxOBProcessorClient<EventType>["transaction"] = async (
+    fn: (
+      txProcessorClient: TxOBTransactionProcessorClient<EventType>,
+    ) => Promise<void>,
+  ): Promise<void> => {
     try {
       await querier.query("BEGIN");
       await fn({
-        getEventByIdForUpdateSkipLocked: async (eventId, opts) => {
+        getEventByIdForUpdateSkipLocked: async (
+          eventId: TxOBEvent<EventType>["id"],
+          opts: TxOBProcessorClientOpts,
+        ): Promise<TxOBEvent<EventType> | null> => {
           const event = await querier.query<TxOBEvent<EventType>>(
             `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${escapeIdentifier(table)} WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED`,
             [eventId, opts.maxErrors],
@@ -36,7 +51,7 @@ export const createProcessorClient = <EventType extends string>(
 
           return event.rows[0];
         },
-        updateEvent: async (event) => {
+        updateEvent: async (event: TxOBEvent<EventType>): Promise<void> => {
           await querier.query(
             `UPDATE ${escapeIdentifier(table)} SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
             [
@@ -48,7 +63,9 @@ export const createProcessorClient = <EventType extends string>(
             ],
           );
         },
-        createEvent: async (event) => {
+        createEvent: async (
+          event: Omit<TxOBEvent<EventType>, "processed_at" | "backoff_until">,
+        ): Promise<void> => {
           await querier.query(
             `INSERT INTO ${escapeIdentifier(table)} (id, timestamp, type, data, correlation_id, handler_results, errors) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [
@@ -65,8 +82,13 @@ export const createProcessorClient = <EventType extends string>(
       });
       await querier.query("COMMIT");
     } catch (error) {
-      await querier.query("ROLLBACK").catch(() => { });
+      await querier.query("ROLLBACK").catch(() => {});
       throw error;
     }
-  },
-});
+  };
+
+  return {
+    getEventsToProcess,
+    transaction,
+  };
+};

@@ -1,11 +1,11 @@
 import { vi, describe, it, expect } from "vitest";
-import { createProcessorClient } from "./client";
+import { createProcessorClient } from "./client.js";
 
 describe("createProcessorClient", () => {
   it("should create a client with the correct functions", async () => {
     const pgClient = {
       query: vi.fn(),
-    };
+    } as any;
     const client = createProcessorClient(pgClient);
     expect(typeof client.getEventsToProcess).toBe("function");
     expect(typeof client.transaction).toBe("function");
@@ -21,7 +21,7 @@ describe("getEventsToProcess", () => {
           rows,
         }),
       ),
-    };
+    } as any;
     const opts = {
       maxErrors: 10,
     };
@@ -29,7 +29,7 @@ describe("getEventsToProcess", () => {
     const result = await client.getEventsToProcess(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
-      "SELECT id, errors FROM \"events\" WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1",
+      'SELECT id, errors FROM "events" WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
       [opts.maxErrors],
     );
     expect(result).toBe(rows);
@@ -40,9 +40,9 @@ describe("transaction", () => {
   it("should begin and commit", async () => {
     const pgClient = {
       query: vi.fn<any>(() => Promise.resolve()),
-    };
+    } as any;
     const client = createProcessorClient(pgClient);
-    await client.transaction(async () => { });
+    await client.transaction(async () => {});
     expect(pgClient.query).toHaveBeenCalledTimes(2);
     expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(pgClient.query).toHaveBeenNthCalledWith(2, "COMMIT");
@@ -50,13 +50,13 @@ describe("transaction", () => {
   it("should begin and rollback", async () => {
     const pgClient = {
       query: vi.fn<any>(() => Promise.resolve()),
-    };
+    } as any;
     const client = createProcessorClient(pgClient);
     await client
       .transaction(async () => {
         throw new Error("error");
       })
-      .catch(() => { });
+      .catch(() => {});
     expect(pgClient.query).toHaveBeenCalledTimes(2);
     expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(pgClient.query).toHaveBeenNthCalledWith(2, "ROLLBACK");
@@ -72,17 +72,19 @@ describe("transaction", () => {
             rowCount: rows.length,
           }),
         ),
-      };
+      } as any;
       const eventId = "123";
       const client = createProcessorClient(pgClient);
       let result: any;
       await client.transaction(async (txClient) => {
-        result = await txClient.getEventByIdForUpdateSkipLocked(eventId, { maxErrors: 6 });
+        result = await txClient.getEventByIdForUpdateSkipLocked(eventId, {
+          maxErrors: 6,
+        });
       });
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM \"events\" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
+        'SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM "events" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED',
         [eventId, 6],
       );
       expect(result).toBe(1);
@@ -97,17 +99,19 @@ describe("transaction", () => {
             rowCount: rows.length,
           }),
         ),
-      };
+      } as any;
       const eventId = "123";
       const client = createProcessorClient(pgClient);
       let result: any;
       await client.transaction(async (txClient) => {
-        result = await txClient.getEventByIdForUpdateSkipLocked(eventId, { maxErrors: 5 });
+        result = await txClient.getEventByIdForUpdateSkipLocked(eventId, {
+          maxErrors: 5,
+        });
       });
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM \"events\" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED",
+        'SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM "events" WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED',
         [eventId, 5],
       );
       expect(result).toBeNull();
@@ -123,7 +127,7 @@ describe("transaction", () => {
             rows,
           }),
         ),
-      };
+      } as any;
       const event = {
         id: "1",
         handler_results: {},
@@ -144,7 +148,7 @@ describe("transaction", () => {
 
       expect(pgClient.query).toHaveBeenCalledTimes(3);
       expect(pgClient.query).toHaveBeenCalledWith(
-        "UPDATE \"events\" SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5",
+        'UPDATE "events" SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5',
         [
           event.handler_results,
           event.errors,

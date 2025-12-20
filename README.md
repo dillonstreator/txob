@@ -64,7 +64,7 @@ Let's look at an example of an HTTP API that allows a user to be invited where a
 ```ts
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { Client } from "pg";
+import pg from "pg";
 import gracefulShutdown from "http-graceful-shutdown";
 import { EventProcessor, ErrorUnprocessableEventHandler } from "txob";
 import { createProcessorClient } from "txob/pg";
@@ -77,7 +77,7 @@ const eventTypes = {
 
 type EventType = keyof typeof eventTypes;
 
-const client = new Client({
+const client = new pg.Client({
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
   database: process.env.POSTGRES_DB,
@@ -92,13 +92,10 @@ const processor = EventProcessor(
     UserCreated: {
       sendEmail: async (event, { signal }) => {
         // find user by event.data.userId to use relevant user data in email sending
-
         // email sending logic
-
         // use the AbortSignal `signal` (aborted when EventProcessor#stop is called) to perform quick cleanup
         // during graceful shutdown enabling the processor to
         // save handler result updates to the event ASAP
-        
         // To mark a handler as unprocessable (will trigger onEventProcessingFailed hook):
         // throw new ErrorUnprocessableEventHandler(new Error("reason"));
       },
@@ -114,30 +111,30 @@ const processor = EventProcessor(
     // other event types
   },
   {
-    onEventProcessingFailed: async ({ failedEvent, reason, txClient, signal }) => {
+    onEventProcessingFailed: async ({
+      failedEvent,
+      reason,
+      txClient,
+      signal,
+    }) => {
       // Transactionally persist an 'event processing failed' event
       // This hook is called when:
       // - Maximum allowed errors are reached
       // - An unprocessable error is encountered (ErrorUnprocessableEventHandler)
       // - Event handler map is missing for the event type
-      
-      // Use the abort signal for cleanup during graceful shutdown
-      if (signal?.aborted) {
-        return;
-      }
-      
+
       const reasonData: Record<string, unknown> = {
         failedEventId: failedEvent.id,
         failedEventType: failedEvent.type,
         reason: reason.type,
       };
-      
+
       // Add additional context based on the failure reason
       if (reason.type === "unprocessable_error") {
         reasonData.handlerName = reason.handlerName;
         reasonData.error = reason.error.message;
       }
-      
+
       await txClient.createEvent({
         id: randomUUID(),
         timestamp: new Date(),
@@ -148,47 +145,52 @@ const processor = EventProcessor(
         errors: 0,
       });
     },
-  }
-)
+  },
+);
 processor.start();
 
-const server = http.createServer(async (req, res) => {
-  if (req.url  !== "/invite") return;
+const server = http
+  .createServer(async (req, res) => {
+    if (req.url !== "/invite") return;
 
-  // invite user endpoint
+    // invite user endpoint
 
-  const correlationId = randomUUID(); // or some value on the incoming request such as a request id / trace id
+    const correlationId = randomUUID(); // or some value on the incoming request such as a request id / trace id
 
-  try {
-    await client.query("BEGIN");
+    try {
+      await client.query("BEGIN");
 
-    const userId = randomUUID();
-    // save user with userId
-    await client.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [userId, req.body.email]);
+      const userId = randomUUID();
+      // save user with userId
+      await client.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [
+        userId,
+        req.body.email,
+      ]);
 
-    // save event to `events` table
-    await client.query(
-      `INSERT INTO events (id, type, data, correlation_id) VALUES ($1, $2, $3, $4)`,
-      [
-        randomUUID(),
-        eventTypes.UserCreated,
-        { userId }, // other relevant data
-        correlationId,
-      ],
-    );
+      // save event to `events` table
+      await client.query(
+        `INSERT INTO events (id, type, data, correlation_id) VALUES ($1, $2, $3, $4)`,
+        [
+          randomUUID(),
+          eventTypes.UserCreated,
+          { userId }, // other relevant data
+          correlationId,
+        ],
+      );
 
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-  }
-}).listen(HTTP_PORT, () => console.log(`listening on port ${HTTP_PORT}`));
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+  })
+  .listen(HTTP_PORT, () => console.log(`listening on port ${HTTP_PORT}`));
 
 gracefulShutdown(server, {
   onShutdown: async () => {
     // allow any actively running event handlers to finish
     // and the event processor to save the results
     await processor.stop();
-  }
+  },
 });
 ```
 
