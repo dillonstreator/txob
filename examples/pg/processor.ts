@@ -55,7 +55,7 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
       sleepTimeMs: 5000,
       logger: console,
       onEventProcessingFailed: async ({
-        failedEvent,
+        event,
         reason,
         txClient,
         signal,
@@ -87,18 +87,18 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           timestamp: new Date(),
           type: eventTypes.EventProcessingFailed,
           data: {
-            failedEventId: failedEvent.id,
-            failedEventType: failedEvent.type,
-            failedEventCorrelationId: failedEvent.correlation_id,
+            failedEventId: event.id,
+            failedEventType: event.type,
+            failedEventCorrelationId: event.correlation_id,
             ...reasonData,
           },
-          correlation_id: failedEvent.correlation_id,
+          correlation_id: event.correlation_id,
           handler_results: {},
           errors: 0,
         });
 
         console.log("Event processing failed event created", {
-          failedEventId: failedEvent.id,
+          failedEventId: event.id,
           reason: reason.type,
         });
       },
