@@ -82,7 +82,7 @@ export const createProcessorClient = <EventType extends string>(
       });
       await querier.query("COMMIT");
     } catch (error) {
-      await querier.query("ROLLBACK").catch(() => {});
+      await querier.query("ROLLBACK");
       throw error;
     }
   };
