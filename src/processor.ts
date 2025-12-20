@@ -91,7 +91,7 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxEventConcurrency?: number;
   maxHandlerConcurrency?: number;
   onEventProcessingFailed?: (opts: {
-    event: TxOBEvent<TxOBEventType>;
+    event: Readonly<TxOBEvent<TxOBEventType>>;
     reason: EventProcessingFailedReason;
     txClient: TxOBTransactionProcessorClient<TxOBEventType>;
     signal?: AbortSignal;
@@ -195,7 +195,7 @@ export const processEvents = async <TxOBEventType extends string>(
               eventHandlerMap = {};
 
               await onEventProcessingFailed?.({
-                event: lockedEvent,
+                event: Object.freeze(lockedEvent),
                 reason: { type: "missing_handler_map" },
                 txClient,
                 signal,
@@ -284,7 +284,7 @@ export const processEvents = async <TxOBEventType extends string>(
                       });
 
                       await onEventProcessingFailed?.({
-                        event: lockedEvent,
+                        event: Object.freeze(lockedEvent),
                         reason: {
                           type: "unprocessable_error",
                           handlerName,
@@ -323,7 +323,7 @@ export const processEvents = async <TxOBEventType extends string>(
                 lockedEvent.backoff_until = null;
 
                 await onEventProcessingFailed?.({
-                  event: lockedEvent,
+                  event: Object.freeze(lockedEvent),
                   reason: { type: "max_errors_reached" },
                   txClient,
                   signal,
