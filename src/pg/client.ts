@@ -16,6 +16,7 @@ interface Querier {
 export const createProcessorClient = <EventType extends string>(
   querier: Querier,
   table: string = "events",
+  limit: number = 100,
 ): TxOBProcessorClient<EventType> => {
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
@@ -23,7 +24,7 @@ export const createProcessorClient = <EventType extends string>(
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
-      `SELECT id, errors FROM ${escapeIdentifier(table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1`,
+      `SELECT id, errors FROM ${escapeIdentifier(table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1 LIMIT ${limit}`,
       [opts.maxErrors],
     );
     return events.rows;

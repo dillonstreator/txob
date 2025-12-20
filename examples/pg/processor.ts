@@ -73,8 +73,6 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           reasonData.reason = "unprocessable_error";
           reasonData.handlerName = reason.handlerName;
           reasonData.error = reason.error.message;
-        } else if (reason.type === "missing_handler_map") {
-          reasonData.reason = "missing_handler_map";
         }
 
         await txClient.createEvent({

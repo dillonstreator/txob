@@ -14,10 +14,7 @@ const createReadyToProcessFilter = (maxErrors: number) => ({
       $or: [{ backoff_until: null }, { backoff_until: { $lt: getDate() } }],
     },
     {
-      $or: [
-        { lock: null },
-        { lock: { $exists: false } },
-      ],
+      $or: [{ lock: null }, { lock: { $exists: false } }],
     },
   ],
   errors: { $lt: maxErrors },
@@ -27,6 +24,7 @@ export const createProcessorClient = <EventType extends string>(
   mongo: MongoClient,
   db: string,
   collection: string = "events",
+  limit: number = 100,
 ): TxOBProcessorClient<EventType> => {
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
@@ -38,6 +36,7 @@ export const createProcessorClient = <EventType extends string>(
       .collection(collection)
       .find(filter)
       .project({ id: 1, errors: 1 })
+      .limit(limit)
       .toArray()) as Pick<TxOBEvent<EventType>, "id" | "errors">[];
 
     return events;

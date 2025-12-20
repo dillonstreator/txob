@@ -45,7 +45,6 @@ When an event fails to process (maximum errors reached, unprocessable error, or 
 - `reason`: An object indicating why processing failed:
   - `{ type: "max_errors_reached" }` - Event exceeded maximum retry attempts
   - `{ type: "unprocessable_error", handlerName: string, error: Error }` - Handler threw `ErrorUnprocessableEventHandler`
-  - `{ type: "missing_handler_map" }` - No handler map exists for the event type
 - `txClient`: The transactional client for creating events within the same transaction
 - `signal`: Optional AbortSignal for graceful shutdown handling
 
