@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { Client } from "pg";
+import pg from "pg";
 import dotenv from "dotenv";
 import gracefulShutdown from "http-graceful-shutdown";
 dotenv.config();
@@ -12,8 +12,31 @@ export const eventTypes = {
 
 export type EventType = keyof typeof eventTypes;
 
-const main = async () => {
-  const client = new Client({
+export async function migrate(client: pg.Client): Promise<void> {
+  await client.query(`CREATE TABLE IF NOT EXISTS events (
+    id UUID,
+    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    type VARCHAR(255) NOT NULL,
+    data JSONB,
+    correlation_id UUID,
+    handler_results JSONB,
+    errors INTEGER,
+    backoff_until TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ
+)`);
+  await client.query(`CREATE TABLE IF NOT EXISTS activity (
+    id UUID,
+    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    ip TEXT,
+    ua TEXT,
+    method TEXT,
+    path TEXT,
+    correlation_id UUID
+)`);
+}
+
+const main = async (): Promise<void> => {
+  const client = new pg.Client({
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
@@ -72,32 +95,9 @@ const main = async () => {
   gracefulShutdown(server);
 };
 
-if (require.main === module) {
-  main().catch((err) => {
+if (import.meta.url === new URL(process.argv[1], import.meta.url).href) {
+  await main().catch((err) => {
     console.error(err);
     process.exit(1);
   });
 }
-
-export const migrate = async (client: Client): Promise<void> => {
-  await client.query(`CREATE TABLE IF NOT EXISTS events (
-    id UUID,
-    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    type VARCHAR(255) NOT NULL,
-    data JSONB,
-    correlation_id UUID,
-    handler_results JSONB,
-    errors INTEGER,
-    backoff_until TIMESTAMPTZ,
-    processed_at TIMESTAMPTZ
-)`);
-  await client.query(`CREATE TABLE IF NOT EXISTS activity (
-    id UUID,
-    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    ip TEXT,
-    ua TEXT,
-    method TEXT,
-    path TEXT,
-    correlation_id UUID
-)`);
-};

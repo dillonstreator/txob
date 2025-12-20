@@ -6,8 +6,8 @@ import {
   ErrorUnprocessableEventHandler,
   defaultBackoff,
   processEvents,
-} from "./processor";
-import { sleep } from "./sleep";
+} from "./processor.js";
+import { sleep } from "./sleep.js";
 
 const mockTxClient = {
   getEventByIdForUpdateSkipLocked: vi.fn(),
@@ -42,7 +42,10 @@ describe("processEvents", () => {
     mockClient.getEventsToProcess.mockImplementation(() => []);
     processEvents(mockClient, handlerMap, opts);
     expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
-    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith(opts);
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith({
+      maxErrors: opts.maxErrors,
+      signal: undefined,
+    });
     expect(mockClient.transaction).not.toHaveBeenCalled();
     expect(mockTxClient.getEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
     expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
@@ -131,7 +134,10 @@ describe("processEvents", () => {
     await processEvents(mockClient, handlerMap, opts);
 
     expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
-    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith(opts);
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith({
+      maxErrors: opts.maxErrors,
+      signal: undefined,
+    });
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(3);
 
@@ -226,7 +232,10 @@ describe("processEvents", () => {
     await processEvents(mockClient, handlerMap, opts);
 
     expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
-    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith(opts);
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith({
+      maxErrors: opts.maxErrors,
+      signal: undefined,
+    });
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(1);
 
@@ -317,7 +326,10 @@ describe("processEvents", () => {
     await processEvents(mockClient, handlerMap, opts);
 
     expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
-    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith(opts);
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledWith({
+      maxErrors: opts.maxErrors,
+      signal: undefined,
+    });
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(1);
 

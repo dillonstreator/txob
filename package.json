@@ -17,32 +17,34 @@
     "url": "git://github.com/dillonstreator/txob.git"
   },
   "version": "0.0.23",
+  "type": "module",
   "license": "MIT",
   "files": [
     "dist",
     "README.md"
   ],
-  "main": "dist/processor.js",
+  "main": "./dist/processor.js",
   "types": "dist/processor.d.ts",
   "exports": {
     ".": {
-      "default": "./dist/processor.js",
-      "types": "./dist/processor.d.ts"
+      "types": "./dist/processor.d.ts",
+      "import": "./dist/processor.js"
     },
     "./pg": {
-      "default": "./dist/pg/client.js",
-      "types": "./dist/pg/client.d.ts"
+      "types": "./dist/pg/client.d.ts",
+      "import": "./dist/pg/client.js"
     },
     "./mongodb": {
-      "default": "./dist/mongodb/client.js",
-      "types": "./dist/mongodb/client.d.ts"
-    }
+      "types": "./dist/mongodb/client.d.ts",
+      "import": "./dist/mongodb/client.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "npm-run-all clean build:tsc",
     "build:tsc": "tsc --build",
-    "prepublish": "yarn build",
-    "clean": "rimraf dist",
+    "prepublishOnly": "yarn build",
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
     "nuke": "rimraf node_modules dist",
     "test": "vitest",
     "test:ci": "yarn test --run --coverage",

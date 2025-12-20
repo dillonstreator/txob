@@ -1,7 +1,7 @@
-import { retryable, RetryOpts } from "./retry";
-import { getDate } from "./date";
+import { retryable, RetryOpts } from "./retry.js";
+import { getDate } from "./date.js";
 import EventEmitter from "node:events";
-import { sleep } from "./sleep";
+import { sleep } from "./sleep.js";
 import pLimit from "p-limit";
 
 type TxOBEventHandlerResult = {
@@ -38,7 +38,7 @@ export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
   }
 >;
 
-type TxOBProcessorClientOpts = {
+export type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
   maxErrors: number;
 };
@@ -60,7 +60,9 @@ export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
     opts: TxOBProcessorClientOpts,
   ): Promise<TxOBEvent<TxOBEventType> | null>;
   updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
-  createEvent(event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">): Promise<void>;
+  createEvent(
+    event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">,
+  ): Promise<void>;
 }
 
 export const defaultBackoff = (errorCount: number): Date => {
@@ -110,7 +112,7 @@ export const processEvents = async <TxOBEventType extends string>(
     signal,
     onEventProcessingFailed,
     retryOpts,
-  } = opts ?? {}
+  } = opts ?? {};
 
   const events = await client.getEventsToProcess({ maxErrors, signal });
   logger?.debug(`found ${events.length} events to process`);
@@ -185,11 +187,14 @@ export const processEvents = async <TxOBEventType extends string>(
                 reason: { type: "missing_handler_map" },
                 txClient,
                 signal,
-              }).catch(hookError => {
-                logger?.error("error in onEventProcessingFailed hook for missing handler map", {
-                  eventId: lockedEvent.id,
-                  error: hookError,
-                })
+              }).catch((hookError) => {
+                logger?.error(
+                  "error in onEventProcessingFailed hook for missing handler map",
+                  {
+                    eventId: lockedEvent.id,
+                    error: hookError,
+                  },
+                );
               });
             }
 
@@ -201,92 +206,91 @@ export const processEvents = async <TxOBEventType extends string>(
 
             const handlerLimit = pLimit(maxHandlerConcurrency);
             await Promise.allSettled(
-              Object.entries(eventHandlerMap).map(
-                ([handlerName, handler]) =>
-                  handlerLimit(async (): Promise<void> => {
-                    const handlerResults =
-                      lockedEvent.handler_results[handlerName] ?? {};
-                    if (handlerResults.processed_at) {
-                      logger?.debug("handler already processed", {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
-                      });
-                      return;
-                    }
-                    if (handlerResults.unprocessable_at) {
-                      logger?.debug("handler unprocessable", {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
-                      });
-                      return;
-                    }
+              Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
+                handlerLimit(async (): Promise<void> => {
+                  const handlerResults =
+                    lockedEvent.handler_results[handlerName] ?? {};
+                  if (handlerResults.processed_at) {
+                    logger?.debug("handler already processed", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                    return;
+                  }
+                  if (handlerResults.unprocessable_at) {
+                    logger?.debug("handler unprocessable", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                    return;
+                  }
 
-                    handlerResults.errors ??= [];
+                  handlerResults.errors ??= [];
 
-                    try {
-                      await handler(lockedEvent, { signal });
-                      handlerResults.processed_at = getDate();
-                      logger?.debug("handler succeeded", {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
+                  try {
+                    await handler(lockedEvent, { signal });
+                    handlerResults.processed_at = getDate();
+                    logger?.debug("handler succeeded", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+                  } catch (error) {
+                    logger?.error("handler errored", {
+                      eventId: lockedEvent.id,
+                      type: lockedEvent.type,
+                      handlerName,
+                      error,
+                      correlationId: lockedEvent.correlation_id,
+                    });
+
+                    if (error instanceof ErrorUnprocessableEventHandler) {
+                      handlerResults.unprocessable_at = getDate();
+                      handlerResults.errors?.push({
+                        error: error.message ?? error,
+                        timestamp: getDate(),
                       });
-                    } catch (error) {
-                      logger?.error("handler errored", {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        error,
-                        correlationId: lockedEvent.correlation_id,
-                      });
 
-                      if (error instanceof ErrorUnprocessableEventHandler) {
-                        handlerResults.unprocessable_at = getDate();
-                        handlerResults.errors?.push({
-                          error: error.message ?? error,
-                          timestamp: getDate(),
-                        });
-
-                        await onEventProcessingFailed?.({
-                          failedEvent: lockedEvent,
-                          reason: {
-                            type: "unprocessable_error",
-                            handlerName,
-                            error: error.error,
-                          },
-                          txClient,
-                          signal,
-                        }).catch(hookError => {
-                          logger?.error("error in onEventProcessingFailed hook for unprocessable error", {
+                      await onEventProcessingFailed?.({
+                        failedEvent: lockedEvent,
+                        reason: {
+                          type: "unprocessable_error",
+                          handlerName,
+                          error: error.error,
+                        },
+                        txClient,
+                        signal,
+                      }).catch((hookError) => {
+                        logger?.error(
+                          "error in onEventProcessingFailed hook for unprocessable error",
+                          {
                             eventId: lockedEvent.id,
                             handlerName,
                             error: hookError,
-                          })
-                        });
-                      } else {
-                        errored = true;
-                        handlerResults.errors?.push({
-                          error: (error as Error)?.message ?? error,
-                          timestamp: getDate(),
-                        });
-                      }
+                          },
+                        );
+                      });
+                    } else {
+                      errored = true;
+                      handlerResults.errors?.push({
+                        error: (error as Error)?.message ?? error,
+                        timestamp: getDate(),
+                      });
                     }
+                  }
 
-                    lockedEvent.handler_results[handlerName] = handlerResults;
-                  }),
+                  lockedEvent.handler_results[handlerName] = handlerResults;
+                }),
               ),
             );
 
             if (errored) {
-              lockedEvent.errors = Math.min(
-                lockedEvent.errors + 1,
-                maxErrors,
-              );
+              lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
               lockedEvent.backoff_until = backoff(lockedEvent.errors);
               if (lockedEvent.errors === maxErrors) {
                 lockedEvent.backoff_until = null;
@@ -296,11 +300,14 @@ export const processEvents = async <TxOBEventType extends string>(
                   reason: { type: "max_errors_reached" },
                   txClient,
                   signal,
-                }).catch(hookError => {
-                  logger?.error("error in onEventProcessingFailed hook for max errors", {
-                    eventId: lockedEvent.id,
-                    error: hookError,
-                  })
+                }).catch((hookError) => {
+                  logger?.error(
+                    "error in onEventProcessingFailed hook for max errors",
+                    {
+                      eventId: lockedEvent.id,
+                      error: hookError,
+                    },
+                  );
                 });
               }
             } else {
