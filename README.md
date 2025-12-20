@@ -23,6 +23,8 @@
 `txob` _does not_ prescribe a storage layer implementation.\
 `txob` _does_ prescribe a base event storage data model that enables a high level of visibility into event handler processing outcomes.
 
+**Important**: `txob` implements an **at-least-once delivery** mechanism. If event update operations fail after handlers have successfully executed, those handlers may be re-invoked. Handlers should be designed to be idempotent to handle potential duplicate executions gracefully.
+
 - `id` string
 - `timestamp` Date
 - `type` (enum/string)

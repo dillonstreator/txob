@@ -8,7 +8,9 @@
     "DDD",
     "microservices",
     "graceful shutdown",
-    "horizontal scalability"
+    "horizontal scalability",
+    "at-least-once",
+    "at-least-once delivery"
   ],
   "author": "Dillon Streator <dillonstreator@gmail.com>",
   "homepage": "https://github.com/dillonstreator/txob",
