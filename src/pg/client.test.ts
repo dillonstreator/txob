@@ -29,7 +29,7 @@ describe("getEventsToProcess", () => {
     const result = await client.getEventsToProcess(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
-      'SELECT id, errors FROM "events" WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1',
+      'SELECT id, errors FROM "events" WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1 LIMIT 100',
       [opts.maxErrors],
     );
     expect(result).toBe(rows);
