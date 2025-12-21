@@ -52,6 +52,36 @@ As per the 'transactional outbox specification', you should ensure your events a
 
 The processor handles graceful shutdown and is horizontally scalable by default with the native client implementatations for [`pg`](./src/pg/client.ts) and [`mongodb`](./src/mongodb/client.ts).
 
+### Database Index Recommendations (PostgreSQL)
+
+For optimal performance when using PostgreSQL, create the following indexes on your events table:
+
+```sql
+-- Primary index for getEventsToProcess query (most critical)
+-- This partial index only includes unprocessed events, keeping it small and fast
+CREATE INDEX idx_events_processing ON events(processed_at, backoff_until, errors) 
+WHERE processed_at IS NULL;
+
+-- Index for lookups by id (if id is not already the primary key)
+CREATE UNIQUE INDEX idx_events_id ON events(id);
+
+-- Optional: Index for correlation_id if you frequently query by correlation
+CREATE INDEX idx_events_correlation_id ON events(correlation_id);
+```
+
+**Why these indexes?**
+
+1. **`idx_events_processing`**: This is the most critical index. It's a partial index that only includes unprocessed events (`WHERE processed_at IS NULL`), which keeps the index small and efficient. It covers the main query pattern in `getEventsToProcess` which filters on:
+   - `processed_at IS NULL`
+   - `backoff_until IS NULL OR backoff_until < NOW()`
+   - `errors < maxErrors`
+
+2. **`idx_events_id`**: Ensures fast lookups when locking events by ID in `getEventByIdForUpdateSkipLocked`. If `id` is your primary key, this index already exists.
+
+3. **`idx_events_correlation_id`**: Optional but recommended if you need to query events by correlation ID for debugging or tracing purposes.
+
+**Note**: The partial index (`idx_events_processing`) is particularly important as it only indexes unprocessed events, making it much smaller and faster than a full table index. As events are processed and `processed_at` is set, they automatically drop out of the index.
+
 ## Installation
 
 ```sh
