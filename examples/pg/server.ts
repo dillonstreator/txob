@@ -9,7 +9,7 @@ dotenv.config();
 
 export const eventTypes = {
   ResourceSaved: "ResourceSaved",
-  EventProcessingFailed: "EventProcessingFailed",
+  EventMaxErrorsReached: "EventMaxErrorsReached",
 } as const;
 
 export type EventType = keyof typeof eventTypes;
@@ -37,11 +37,17 @@ export async function migrate(client: pg.Client): Promise<void> {
 )`);
   // Primary index for getEventsToProcess query (most critical)
   // This partial index only includes unprocessed events, keeping it small and fast
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_events_processing ON events(processed_at, backoff_until, errors) WHERE processed_at IS NULL`);
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_processing ON events(processed_at, backoff_until, errors) WHERE processed_at IS NULL`,
+  );
   // Index for lookups by id (if id is not already the primary key)
-  await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_id ON events(id)`);
+  await client.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_events_id ON events(id)`,
+  );
   // Optional: Index for correlation_id if you frequently query by correlation
-  await client.query(`CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON events(correlation_id)`);
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON events(correlation_id)`,
+  );
 }
 
 const main = async (): Promise<void> => {

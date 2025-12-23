@@ -1,4 +1,4 @@
-import { retryable, RetryOpts } from "./retry.js";
+import { type RetryOpts, retryable } from "./retry.js";
 import { getDate } from "./date.js";
 import EventEmitter from "node:events";
 import { sleep } from "./sleep.js";
@@ -78,10 +78,6 @@ const defaultMaxErrors = 5;
 const defaultMaxEventConcurrency = 5;
 const defaultMaxHandlerConcurrency = 10;
 
-export type EventProcessingFailedReason =
-  | { type: "max_errors_reached" }
-  | { type: "unprocessable_error"; handlerName: string; error: Error };
-
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
   backoff: (count: number) => Date;
@@ -90,44 +86,11 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   logger?: Logger;
   maxEventConcurrency?: number;
   maxHandlerConcurrency?: number;
-  onEventProcessingFailed?: (opts: {
+  onEventMaxErrorsReached?: (opts: {
     event: Readonly<TxOBEvent<TxOBEventType>>;
-    reason: EventProcessingFailedReason;
     txClient: TxOBTransactionProcessorClient<TxOBEventType>;
     signal?: AbortSignal;
   }) => Promise<void>;
-};
-
-/**
- * Handles errors from the onEventProcessingFailed hook.
- * Always re-throws the error to fail the transaction and maintain integrity.
- */
-const handleHookError = (
-  hookError: unknown,
-  context: {
-    eventId: string;
-    reason: EventProcessingFailedReason;
-    handlerName?: string;
-    logger?: Logger;
-  },
-): never => {
-  const errorMessage =
-    context.reason.type === "unprocessable_error"
-      ? "error in onEventProcessingFailed hook for unprocessable error"
-      : "error in onEventProcessingFailed hook for max errors";
-
-  context.logger?.error(
-    {
-      eventId: context.eventId,
-      handlerName: context.handlerName,
-      reason: context.reason,
-      error: hookError,
-    },
-    errorMessage,
-  );
-
-  // Always fail the transaction to maintain integrity
-  throw hookError;
 };
 
 export const processEvents = async <TxOBEventType extends string>(
@@ -142,7 +105,7 @@ export const processEvents = async <TxOBEventType extends string>(
     maxHandlerConcurrency = defaultMaxHandlerConcurrency,
     logger,
     signal,
-    onEventProcessingFailed,
+    onEventMaxErrorsReached,
     retryOpts,
   } = opts ?? {};
 
@@ -212,8 +175,12 @@ export const processEvents = async <TxOBEventType extends string>(
 
             let errored = false;
 
-            let eventHandlerMap = handlerMap[lockedEvent.type];
-            if (!eventHandlerMap) {
+            const eventHandlerMap = handlerMap[lockedEvent.type] ?? {};
+
+            // Typescript should prevent the caller from passing a handler map that doesn't specify all event types but we'll check for it anyway
+            // This is distinct from an empty handler map for an event type which is valid
+            // We just want the caller to be explicit about the event types they are interested in handling and not accidentally skip events
+            if (!(lockedEvent.type in handlerMap)) {
               logger?.warn(
                 {
                   eventId: lockedEvent.id,
@@ -224,7 +191,6 @@ export const processEvents = async <TxOBEventType extends string>(
               );
               errored = true;
               lockedEvent.errors = maxErrors;
-              eventHandlerMap = {};
             }
 
             logger?.debug(
@@ -299,32 +265,6 @@ export const processEvents = async <TxOBEventType extends string>(
                         error: error.message ?? error,
                         timestamp: getDate(),
                       });
-
-                      if (onEventProcessingFailed) {
-                        try {
-                          await onEventProcessingFailed({
-                            event: deepClone(lockedEvent),
-                            reason: {
-                              type: "unprocessable_error",
-                              handlerName,
-                              error: error.error,
-                            },
-                            txClient,
-                            signal,
-                          });
-                        } catch (hookError) {
-                          handleHookError(hookError, {
-                            eventId: lockedEvent.id,
-                            reason: {
-                              type: "unprocessable_error",
-                              handlerName,
-                              error: error.error,
-                            },
-                            handlerName,
-                            logger,
-                          });
-                        }
-                      }
                     } else {
                       errored = true;
                       handlerResults.errors?.push({
@@ -345,20 +285,23 @@ export const processEvents = async <TxOBEventType extends string>(
               if (lockedEvent.errors === maxErrors) {
                 lockedEvent.backoff_until = null;
 
-                if (onEventProcessingFailed) {
+                if (onEventMaxErrorsReached) {
                   try {
-                    await onEventProcessingFailed({
+                    await onEventMaxErrorsReached({
                       event: deepClone(lockedEvent),
-                      reason: { type: "max_errors_reached" },
                       txClient,
                       signal,
                     });
                   } catch (hookError) {
-                    handleHookError(hookError, {
-                      eventId: lockedEvent.id,
-                      reason: { type: "max_errors_reached" },
-                      logger,
-                    });
+                    logger?.error(
+                      {
+                        eventId: lockedEvent.id,
+                        error: hookError,
+                      },
+                      "error in onEventMaxErrorsReached hook",
+                    );
+
+                    throw hookError;
                   }
                 }
               }
@@ -524,7 +467,7 @@ export const Processor = (
         ...stopOpts,
       };
 
-      let caughtErr;
+      let caughtErr: unknown;
       try {
         await Promise.race([
           new Promise<void>((resolve) => {

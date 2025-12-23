@@ -46,16 +46,16 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           return;
         },
       },
-      EventProcessingFailed: {
-        // Optional: add handlers for EventProcessingFailed events if needed
+      EventMaxErrorsReached: {
+        // Optional: add handlers for EventMaxErrorsReached events if needed
         // For example, you might want to send alerts or log to external systems
       },
     },
     {
       sleepTimeMs: 5000,
       logger: console,
-      onEventProcessingFailed: async ({ event, reason, txClient, signal }) => {
-        // Transactionally persist an 'event processing failed' event
+      onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
+        // Transactionally persist an 'event max errors reached' event
         // This hook is called when:
         // - Maximum allowed errors are reached
         // - An unprocessable error is encountered
@@ -66,33 +66,22 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           return;
         }
 
-        const reasonData: Record<string, unknown> = {};
-        if (reason.type === "max_errors_reached") {
-          reasonData.reason = "max_errors_reached";
-        } else if (reason.type === "unprocessable_error") {
-          reasonData.reason = "unprocessable_error";
-          reasonData.handlerName = reason.handlerName;
-          reasonData.error = reason.error.message;
-        }
-
         await txClient.createEvent({
           id: randomUUID(),
           timestamp: new Date(),
-          type: eventTypes.EventProcessingFailed,
+          type: eventTypes.EventMaxErrorsReached,
           data: {
             failedEventId: event.id,
             failedEventType: event.type,
             failedEventCorrelationId: event.correlation_id,
-            ...reasonData,
           },
           correlation_id: event.correlation_id,
           handler_results: {},
           errors: 0,
         });
 
-        console.log("Event processing failed event created", {
+        console.log("Event max errors reached event created", {
           failedEventId: event.id,
-          reason: reason.type,
         });
       },
     },

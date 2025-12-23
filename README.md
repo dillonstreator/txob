@@ -37,14 +37,11 @@
 
 `txob` exposes an optionally configurable interface into event processing with control over maximum allowed errors, backoff calculation on error, event update retrying, logging, and transactional event creation when processing fails.
 
-### Event Processing Failed Hook
+### Event Processing Max Errors Reached Hook
 
-When an event fails to process (maximum errors reached, unprocessable error, or missing handler), you can optionally provide an `onEventProcessingFailed` hook that will be called transactionally. This allows you to persist a failure event within the same transaction, ensuring data consistency. The hook receives:
+When an event fails to process (maximum errors reached, unprocessable error, or missing handler), you can optionally provide an `onEventMaxErrorsReached` hook that will be called transactionally. This allows you to persist a failure event within the same transaction, ensuring data consistency. The hook receives:
 
-- `failedEvent`: The event that failed processing
-- `reason`: An object indicating why processing failed:
-  - `{ type: "max_errors_reached" }` - Event exceeded maximum retry attempts
-  - `{ type: "unprocessable_error", handlerName: string, error: Error }` - Handler threw `ErrorUnprocessableEventHandler`
+- `event`: The event that failed processing
 - `txClient`: The transactional client for creating events within the same transaction
 - `signal`: Optional AbortSignal for graceful shutdown handling
 
@@ -59,7 +56,7 @@ For optimal performance when using PostgreSQL, create the following indexes on y
 ```sql
 -- Primary index for getEventsToProcess query (most critical)
 -- This partial index only includes unprocessed events, keeping it small and fast
-CREATE INDEX idx_events_processing ON events(processed_at, backoff_until, errors) 
+CREATE INDEX idx_events_processing ON events(processed_at, backoff_until, errors)
 WHERE processed_at IS NULL;
 
 -- Index for lookups by id (if id is not already the primary key)
@@ -102,7 +99,7 @@ import { createProcessorClient } from "txob/pg";
 
 const eventTypes = {
   UserCreated: "UserCreated",
-  EventProcessingFailed: "EventProcessingFailed",
+  EventMaxErrorsReached: "EventMaxErrorsReached",
   // other event types
 } as const;
 
@@ -127,7 +124,7 @@ const processor = EventProcessor(
         // use the AbortSignal `signal` (aborted when EventProcessor#stop is called) to perform quick cleanup
         // during graceful shutdown enabling the processor to
         // save handler result updates to the event ASAP
-        // To mark a handler as unprocessable (will trigger onEventProcessingFailed hook):
+        // To mark a handler as unprocessable (will trigger onEventMaxErrorsReached hook):
         // throw new ErrorUnprocessableEventHandler(new Error("reason"));
       },
       publish: async (event) => {
@@ -135,19 +132,14 @@ const processor = EventProcessor(
       },
       // other handler that should be executed when a `UserCreated` event is saved
     },
-    EventProcessingFailed: {
-      // Optional: add handlers for EventProcessingFailed events if needed
+    EventMaxErrorsReached: {
+      // Optional: add handlers for EventMaxErrorsReached events if needed
       // For example, you might want to send alerts or log to external systems
     },
     // other event types
   },
   {
-    onEventProcessingFailed: async ({
-      failedEvent,
-      reason,
-      txClient,
-      signal,
-    }) => {
+    onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
       // Transactionally persist an 'event processing failed' event
       // This hook is called when:
       // - Maximum allowed errors are reached
@@ -155,8 +147,8 @@ const processor = EventProcessor(
       // - Event handler map is missing for the event type
 
       const reasonData: Record<string, unknown> = {
-        failedEventId: failedEvent.id,
-        failedEventType: failedEvent.type,
+        eventId: event.id,
+        eventType: event.type,
         reason: reason.type,
       };
 
@@ -171,7 +163,7 @@ const processor = EventProcessor(
         timestamp: new Date(),
         type: eventTypes.EventProcessingFailed,
         data: reasonData,
-        correlation_id: failedEvent.correlation_id,
+        correlation_id: event.correlation_id,
         handler_results: {},
         errors: 0,
       });

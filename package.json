@@ -51,7 +51,7 @@
     "nuke": "rimraf node_modules dist",
     "test": "vitest",
     "test:ci": "yarn test --run --coverage",
-    "prettier": "prettier -w ."
+    "format": "prettier -w ."
   },
   "dependencies": {
     "p-limit": "^7.2.0",
