@@ -284,6 +284,7 @@ export const processEvents = async <TxOBEventType extends string>(
               lockedEvent.backoff_until = backoff(lockedEvent.errors);
               if (lockedEvent.errors === maxErrors) {
                 lockedEvent.backoff_until = null;
+                lockedEvent.processed_at = getDate();
 
                 if (onEventMaxErrorsReached) {
                   try {

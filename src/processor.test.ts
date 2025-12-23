@@ -160,6 +160,7 @@ describe("processEvents", () => {
 
     expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(2);
     expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
+      processed_at: now,
       backoff_until: null,
       correlation_id: "abc123",
       data: {},
