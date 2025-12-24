@@ -18,36 +18,40 @@
     "type": "git",
     "url": "git://github.com/dillonstreator/txob.git"
   },
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "license": "MIT",
   "files": [
     "dist",
     "README.md"
   ],
-  "main": "./dist/processor.js",
+  "main": "./dist/cjs/processor.js",
   "types": "dist/processor.d.ts",
   "exports": {
     ".": {
       "types": "./dist/processor.d.ts",
-      "import": "./dist/processor.js"
+      "import": "./dist/processor.js",
+      "require": "./dist/cjs/processor.js"
     },
     "./pg": {
       "types": "./dist/pg/client.d.ts",
-      "import": "./dist/pg/client.js"
+      "import": "./dist/pg/client.js",
+      "require": "./dist/cjs/pg/client.js"
     },
     "./mongodb": {
       "types": "./dist/mongodb/client.d.ts",
-      "import": "./dist/mongodb/client.js"
+      "import": "./dist/mongodb/client.js",
+      "require": "./dist/cjs/mongodb/client.js"
     },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "npm-run-all clean build:tsc copy:files",
-    "build:tsc": "tsc --build",
+    "build": "npm-run-all clean build:esm build:cjs copy:files",
+    "build:esm": "tsc --build",
+    "build:cjs": "tsc --build tsconfig.cjs.json",
     "copy:files": "copyfiles package.json README.md LICENSE dist",
     "prepublishOnly": "yarn build",
-    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "clean": "rimraf dist tsconfig.tsbuildinfo tsconfig.cjs.tsbuildinfo",
     "nuke": "rimraf node_modules dist",
     "test": "vitest",
     "test:ci": "yarn test --run --coverage",
