@@ -140,13 +140,13 @@ const processor = EventProcessor(
   },
   {
     onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
-      // Transactionally persist an 'event processing failed' event
+      // Transactionally persist an 'event max errors reached' event
       // This hook is called when the maximum allowed errors are reached
 
       await txClient.createEvent({
         id: randomUUID(),
         timestamp: new Date(),
-        type: eventTypes.EventProcessingFailed,
+        type: eventTypes.EventMaxErrorsReached,
         data: {
           eventId: event.id,
           eventType: event.type,
