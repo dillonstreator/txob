@@ -83,7 +83,21 @@ export const createProcessorClient = <EventType extends string>(
       });
       await querier.query("COMMIT");
     } catch (error) {
-      await querier.query("ROLLBACK");
+      try {
+        await querier.query("ROLLBACK");
+      } catch (rollbackError) {
+        const message = error instanceof Error ? error.message : String(error);
+        const rollbackMessage =
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+
+        throw new Error(
+          `Transaction failed: ${message} (rollback also failed: ${rollbackMessage})`,
+          { cause: error },
+        );
+      }
+
       throw error;
     }
   };
