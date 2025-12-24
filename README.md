@@ -50,14 +50,14 @@ await db.commit(); // 💥 Fails! Message is in queue but no user record
 
 ## Features
 
-✅ **At-least-once delivery** - Events are never lost, even during failures or crashes
-✅ **Graceful shutdown** - Finish processing in-flight events before shutting down
-✅ **Horizontal scalability** - Run multiple processors without conflicts using row-level locking
-✅ **Database agnostic** - Built-in support for PostgreSQL and MongoDB, or implement your own
-✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
-✅ **TypeScript-first** - Full type safety and autocompletion
-✅ **Handler result tracking** - Track the execution status of each handler independently
-✅ **Minimal dependencies** - Only `p-limit` and `retry` (plus your database driver)
+- ✅ **At-least-once delivery** - Events are never lost, even during failures or crashes
+- ✅ **Graceful shutdown** - Finish processing in-flight events before shutting down
+- ✅ **Horizontal scalability** - Run multiple processors without conflicts using row-level locking
+- ✅ **Database agnostic** - Built-in support for PostgreSQL and MongoDB, or implement your own
+- ✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
+- ✅ **TypeScript-first** - Full type safety and autocompletion
+- ✅ **Handler result tracking** - Track the execution status of each handler independently
+- ✅ **Minimal dependencies** - Only `p-limit` and `retry` (plus your database driver)
 
 ## Quick Start
 
@@ -791,15 +791,13 @@ const processor = EventProcessor(createProcessorClient(client), {
   UserCreated: {
     // Publish to Kafka with guaranteed consistency
     publishToKafka: async (event) => {
-      // Check if already published (idempotency)
-      const published = await checkIfPublished(event.id);
-      if (published) return;
-
+      // Kafka's idempotent producer handles deduplication
+      // Using event.id as the key ensures retries are safe
       await producer.send({
         topic: "user-events",
         messages: [
           {
-            key: event.data.userId,
+            key: event.id, // Use event.id for idempotency
             value: JSON.stringify({
               type: event.type,
               data: event.data,
@@ -808,8 +806,6 @@ const processor = EventProcessor(createProcessorClient(client), {
           },
         ],
       });
-
-      await markAsPublished(event.id);
     },
 
     // Also handle other side effects
