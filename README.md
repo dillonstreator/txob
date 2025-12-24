@@ -141,28 +141,16 @@ const processor = EventProcessor(
   {
     onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
       // Transactionally persist an 'event processing failed' event
-      // This hook is called when:
-      // - Maximum allowed errors are reached
-      // - An unprocessable error is encountered (ErrorUnprocessableEventHandler)
-      // - Event handler map is missing for the event type
-
-      const reasonData: Record<string, unknown> = {
-        eventId: event.id,
-        eventType: event.type,
-        reason: reason.type,
-      };
-
-      // Add additional context based on the failure reason
-      if (reason.type === "unprocessable_error") {
-        reasonData.handlerName = reason.handlerName;
-        reasonData.error = reason.error.message;
-      }
+      // This hook is called when the maximum allowed errors are reached
 
       await txClient.createEvent({
         id: randomUUID(),
         timestamp: new Date(),
         type: eventTypes.EventProcessingFailed,
-        data: reasonData,
+        data: {
+          eventId: event.id,
+          eventType: event.type,
+        },
         correlation_id: event.correlation_id,
         handler_results: {},
         errors: 0,
