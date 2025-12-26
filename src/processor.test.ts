@@ -279,6 +279,7 @@ describe("processEvents", () => {
     const opts = {
       maxErrors: 5,
       backoff: vi.fn(),
+      onEventMaxErrorsReached: vi.fn(),
     };
     const err = new Error("some error");
     const errUnprocessable = new ErrorUnprocessableEventHandler(
@@ -342,12 +343,23 @@ describe("processEvents", () => {
       1,
     );
 
+    // Should call onEventMaxErrorsReached since all remaining handlers are unprocessable
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledWith({
+      event: expect.objectContaining({
+        id: "1",
+        errors: opts.maxErrors,
+      }),
+      txClient: mockTxClient,
+      signal: undefined,
+    });
+
     expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
     expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
       backoff_until: null,
       correlation_id: "abc123",
       data: {},
-      errors: 1,
+      errors: opts.maxErrors,
       handler_results: {
         handler1: {
           unprocessable_at: now,
@@ -373,6 +385,252 @@ describe("processEvents", () => {
       timestamp: now,
       type: "evtType1",
       processed_at: now,
+    });
+  });
+
+  it("sets errors to maxErrors when all handlers are unprocessable and calls onEventMaxErrorsReached", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(),
+      onEventMaxErrorsReached: vi.fn(),
+    };
+    const errUnprocessable1 = new ErrorUnprocessableEventHandler(
+      new Error("err1"),
+    );
+    const errUnprocessable2 = new ErrorUnprocessableEventHandler(
+      new Error("err2"),
+    );
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(errUnprocessable1)),
+        handler2: vi.fn(() => Promise.reject(errUnprocessable2)),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    const events = [evt1];
+    mockClient.getEventsToProcess.mockImplementation(() => events);
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return events.find((e) => e.id === id);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    await processEvents(mockClient, handlerMap, opts);
+
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler2).toHaveBeenCalledOnce();
+
+    // Backoff is called even when reaching maxErrors (then backoff_until is nulled)
+    expect(opts.backoff).toHaveBeenCalledOnce();
+    expect(opts.backoff).toHaveBeenCalledWith(opts.maxErrors);
+
+    // Should call the maxErrors callback
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledWith({
+      event: expect.objectContaining({
+        id: "1",
+        errors: opts.maxErrors,
+      }),
+      txClient: mockTxClient,
+      signal: undefined,
+    });
+
+    expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
+      backoff_until: null,
+      correlation_id: "abc123",
+      data: {},
+      errors: opts.maxErrors,
+      handler_results: {
+        handler1: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable1.message,
+              timestamp: now,
+            },
+          ],
+        },
+        handler2: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable2.message,
+              timestamp: now,
+            },
+          ],
+        },
+      },
+      id: "1",
+      timestamp: now,
+      type: "evtType1",
+      processed_at: now,
+    });
+  });
+
+  it("sets errors to maxErrors when some handlers succeed and remaining are unprocessable", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(),
+      onEventMaxErrorsReached: vi.fn(),
+    };
+    const errUnprocessable = new ErrorUnprocessableEventHandler(
+      new Error("err1"),
+    );
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.resolve()),
+        handler2: vi.fn(() => Promise.reject(errUnprocessable)),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    const events = [evt1];
+    mockClient.getEventsToProcess.mockImplementation(() => events);
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return events.find((e) => e.id === id);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    await processEvents(mockClient, handlerMap, opts);
+
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler2).toHaveBeenCalledOnce();
+
+    // Should call backoff even when jumping to maxErrors
+    expect(opts.backoff).toHaveBeenCalledWith(opts.maxErrors);
+
+    // Should call the maxErrors callback since all remaining handlers are unprocessable
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
+
+    expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
+      backoff_until: null,
+      correlation_id: "abc123",
+      data: {},
+      errors: opts.maxErrors,
+      handler_results: {
+        handler1: {
+          errors: [],
+          processed_at: now,
+        },
+        handler2: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable.message,
+              timestamp: now,
+            },
+          ],
+        },
+      },
+      id: "1",
+      timestamp: now,
+      type: "evtType1",
+      processed_at: now,
+    });
+  });
+
+  it("does not set errors to maxErrors when remaining handlers have retryable errors", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(() => now),
+      onEventMaxErrorsReached: vi.fn(),
+    };
+    const retryableError = new Error("temporary failure");
+    const errUnprocessable = new ErrorUnprocessableEventHandler(
+      new Error("err1"),
+    );
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.resolve()),
+        handler2: vi.fn(() => Promise.reject(errUnprocessable)),
+        handler3: vi.fn(() => Promise.reject(retryableError)),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    const events = [evt1];
+    mockClient.getEventsToProcess.mockImplementation(() => events);
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return events.find((e) => e.id === id);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    await processEvents(mockClient, handlerMap, opts);
+
+    expect(mockClient.getEventsToProcess).toHaveBeenCalledOnce();
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler2).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler3).toHaveBeenCalledOnce();
+
+    // Should call backoff normally since handler3 has retryable error
+    expect(opts.backoff).toHaveBeenCalledWith(1);
+
+    // Should NOT call the maxErrors callback since errors < maxErrors
+    expect(opts.onEventMaxErrorsReached).not.toHaveBeenCalled();
+
+    expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
+      backoff_until: expect.any(Date),
+      correlation_id: "abc123",
+      data: {},
+      errors: 1,
+      handler_results: {
+        handler1: {
+          errors: [],
+          processed_at: now,
+        },
+        handler2: {
+          unprocessable_at: now,
+          errors: [
+            {
+              error: errUnprocessable.message,
+              timestamp: now,
+            },
+          ],
+        },
+        handler3: {
+          errors: [
+            {
+              error: retryableError.message,
+              timestamp: now,
+            },
+          ],
+        },
+      },
+      id: "1",
+      timestamp: now,
+      type: "evtType1",
     });
   });
 });

@@ -265,6 +265,7 @@ export const processEvents = async <TxOBEventType extends string>(
                         error: error.message ?? error,
                         timestamp: getDate(),
                       });
+                      errored = true;
                     } else {
                       errored = true;
                       handlerResults.errors?.push({
@@ -278,6 +279,27 @@ export const processEvents = async <TxOBEventType extends string>(
                 }),
               ),
             );
+
+            // Check if all remaining handlers (those that haven't succeeded) are unprocessable
+            // If so, there's nothing left to retry, so set errors to maxErrors to stop processing
+            const remainingHandlers = Object.entries(eventHandlerMap).filter(
+              ([handlerName, _]) => {
+                const result = lockedEvent.handler_results[handlerName];
+                return !result?.processed_at;
+              },
+            );
+
+            const allRemainingHandlersUnprocessable =
+              remainingHandlers.length > 0 &&
+              remainingHandlers.every(([handlerName, _]) => {
+                const result = lockedEvent.handler_results[handlerName];
+                return result?.unprocessable_at;
+              });
+
+            if (allRemainingHandlersUnprocessable) {
+              lockedEvent.errors = maxErrors;
+              errored = true;
+            }
 
             if (errored) {
               lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
