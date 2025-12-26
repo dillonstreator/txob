@@ -80,7 +80,7 @@ await db.query("COMMIT");
 - ✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
 - ✅ **TypeScript-first** - Full type safety and autocompletion
 - ✅ **Handler result tracking** - Track the execution status of each handler independently
-- ✅ **Minimal dependencies** - Only `p-limit` and `retry` (plus your database driver)
+- ✅ **Minimal dependencies** - Only `p-limit` (plus your database driver)
 
 ## Quick Start
 
@@ -547,15 +547,6 @@ EventProcessor(client, handlerMap, {
   onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
     // Create a dead-letter event, send alerts, etc.
   },
-
-  // Retry options for event update operations (default: shown below)
-  retryOpts: {
-    retries: 3,
-    factor: 2,
-    minTimeout: 100,
-    maxTimeout: 2500,
-    randomize: true,
-  },
 });
 ```
 
@@ -570,7 +561,6 @@ EventProcessor(client, handlerMap, {
 | `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently |
 | `logger`                  | `Logger`                  | `undefined` | Custom logger interface                     |
 | `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                         |
-| `retryOpts`               | `RetryOpts`               | See above   | Options for retrying event updates          |
 
 ## Usage Examples
 

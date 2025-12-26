@@ -55,10 +55,6 @@ describe("processEvents", () => {
     const opts = {
       maxErrors: 5,
       backoff: vi.fn(),
-      retry: {
-        minTimeout: 50,
-        maxTimeout: 100,
-      },
     };
     const err = new Error("some error");
     const handlerMap = {
@@ -124,11 +120,8 @@ describe("processEvents", () => {
 
       return events.find((e) => e.id === id);
     });
-    let updateEventCalls = 0;
     mockTxClient.updateEvent.mockImplementation(() => {
-      updateEventCalls++;
-      if (updateEventCalls <= 1) return Promise.reject("some error");
-      else return Promise.resolve();
+      return Promise.resolve();
     });
 
     await processEvents(mockClient, handlerMap, opts);
@@ -158,7 +151,7 @@ describe("processEvents", () => {
     expect(opts.backoff).toHaveBeenCalledOnce();
     expect(opts.backoff).toHaveBeenCalledWith(5); // evt.errors + 1
 
-    expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(2);
+    expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
     expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
       processed_at: now,
       backoff_until: null,

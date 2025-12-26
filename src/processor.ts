@@ -1,4 +1,3 @@
-import { type RetryOpts, retryable } from "./retry.js";
 import { getDate } from "./date.js";
 import EventEmitter from "node:events";
 import { sleep } from "./sleep.js";
@@ -81,7 +80,6 @@ const defaultMaxHandlerConcurrency = 10;
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
   backoff: (count: number) => Date;
-  retryOpts?: RetryOpts;
   signal?: AbortSignal;
   logger?: Logger;
   maxEventConcurrency?: number;
@@ -106,7 +104,6 @@ export const processEvents = async <TxOBEventType extends string>(
     logger,
     signal,
     onEventMaxErrorsReached,
-    retryOpts,
   } = opts ?? {};
 
   const events = await client.getEventsToProcess({ maxErrors, signal });
@@ -344,18 +341,7 @@ export const processEvents = async <TxOBEventType extends string>(
               "updating event",
             );
 
-            // The success of this update is crucial for the processor flow.
-            // In the unlikely scenario of a failure to update the event, any handlers that have succeeded
-            // during this iteration will be reinvoked in the subsequent processor tick.
-            // This is why the processor is guaranteed for 'at least once' processing.
-            await retryable(() => txClient.updateEvent(lockedEvent), {
-              retries: 3,
-              factor: 2,
-              minTimeout: 100,
-              maxTimeout: 2500,
-              randomize: true,
-              ...retryOpts,
-            });
+            await txClient.updateEvent(lockedEvent);
           });
         } catch (error) {
           logger?.error(
