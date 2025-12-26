@@ -633,6 +633,67 @@ describe("processEvents", () => {
       type: "evtType1",
     });
   });
+
+  it("should throw and log when onEventMaxErrorsReached hook throws an error", async () => {
+    const hookError = new Error("hook error");
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(),
+      onEventMaxErrorsReached: vi.fn(() => {
+        throw hookError;
+      }),
+      logger,
+    };
+    const errUnprocessable = new ErrorUnprocessableEventHandler(
+      new Error("err1"),
+    );
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(errUnprocessable)),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    const events = [evt1];
+    mockClient.getEventsToProcess.mockImplementation(() => events);
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return events.find((e) => e.id === id);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    await processEvents(mockClient, handlerMap, opts);
+
+    expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        eventId: "1",
+        error: hookError,
+      },
+      "error in onEventMaxErrorsReached hook",
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        eventId: "1",
+        error: hookError,
+      },
+      "error processing event",
+    );
+  });
 });
 
 describe("defaultBackoff", () => {
@@ -640,6 +701,16 @@ describe("defaultBackoff", () => {
     const backoff = defaultBackoff(3);
     const actual = backoff.getTime();
     const expected = Date.now() + 1000 * 2 ** 3;
+    const diff = Math.abs(actual - expected);
+
+    expect(diff).lessThanOrEqual(1);
+  });
+
+  it("should cap backoff at maxDelayMs for large error counts", () => {
+    const maxDelayMs = 1000 * 60; // 60 seconds
+    const backoff = defaultBackoff(20); // Large error count that would exceed max
+    const actual = backoff.getTime();
+    const expected = Date.now() + maxDelayMs;
     const diff = Math.abs(actual - expected);
 
     expect(diff).lessThanOrEqual(1);
@@ -681,6 +752,91 @@ describe("Processor", () => {
     }
     const diff = Date.now() - start;
     expect(diff).toBeLessThan(50);
+  });
+  it("should warn when stopping a processor that is not started", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const processor = Processor(() => sleep(1), { sleepTimeMs: 0, logger });
+
+    await processor.stop();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "cannot stop processor from 'stopped'",
+    );
+  });
+  it("should handle shutdown when processor completes before stop is called", async () => {
+    let resolve: (() => void) | null = null;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+
+    const processor = Processor(
+      () => {
+        return promise;
+      },
+      { sleepTimeMs: 0 },
+    );
+    processor.start();
+
+    // Complete the processor's work
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    resolve!();
+
+    // Wait a bit for the processor to emit shutdownComplete
+    await sleep(10);
+
+    // Now stop should handle the already-completed case
+    await processor.stop();
+  });
+  it("should warn when starting a processor that is already started", () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const processor = Processor(() => sleep(1000), { sleepTimeMs: 0, logger });
+
+    processor.start();
+    processor.start(); // Try to start again
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "cannot start processor from 'started'",
+    );
+  });
+  it("should handle non-abort errors and continue processing", async () => {
+    let calls = 0;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const error = new Error("processing error");
+
+    const processor = Processor(
+      () => {
+        calls++;
+        if (calls === 1) {
+          throw error;
+        }
+        return Promise.resolve();
+      },
+      { sleepTimeMs: 0, logger },
+    );
+    processor.start();
+
+    // Wait for the error to be logged and processing to continue
+    await sleep(1100);
+
+    await processor.stop();
+
+    expect(logger.error).toHaveBeenCalledWith(error);
+    expect(calls).toBeGreaterThan(1); // Should continue processing after error
   });
 });
 

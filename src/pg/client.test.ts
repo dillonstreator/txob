@@ -159,4 +159,83 @@ describe("transaction", () => {
       );
     });
   });
+
+  describe("createEvent", () => {
+    it("should execute the correct query", async () => {
+      const pgClient = {
+        query: vi.fn<any>(() => Promise.resolve()),
+      } as any;
+      const event = {
+        id: "1",
+        timestamp: new Date(),
+        type: "test_event",
+        data: {
+          thing1: "something",
+        },
+        correlation_id: "abc123",
+        handler_results: {},
+        errors: 0,
+      };
+      const client = createProcessorClient(pgClient);
+      await client.transaction(async (txClient) => {
+        await txClient.createEvent(event);
+      });
+
+      expect(pgClient.query).toHaveBeenCalledTimes(3);
+      expect(pgClient.query).toHaveBeenCalledWith(
+        'INSERT INTO "events" (id, timestamp, type, data, correlation_id, handler_results, errors) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [
+          event.id,
+          event.timestamp,
+          event.type,
+          event.data,
+          event.correlation_id,
+          event.handler_results,
+          event.errors,
+        ],
+      );
+    });
+  });
+
+  describe("rollback failure", () => {
+    it("should throw combined error when both transaction and rollback fail", async () => {
+      const transactionError = new Error("transaction failed");
+      const rollbackError = new Error("rollback failed");
+      let queryCount = 0;
+
+      const pgClient = {
+        query: vi.fn<any>((sql: string) => {
+          queryCount++;
+          if (sql === "BEGIN") {
+            // BEGIN succeeds
+            return Promise.resolve();
+          } else if (sql === "ROLLBACK") {
+            // ROLLBACK fails
+            return Promise.reject(rollbackError);
+          } else {
+            // COMMIT or other operations
+            return Promise.resolve();
+          }
+        }),
+      } as any;
+
+      const client = createProcessorClient(pgClient);
+
+      try {
+        await client.transaction(async () => {
+          throw transactionError;
+        });
+        expect.fail("should have thrown an error");
+      } catch (error: any) {
+        expect(error.message).toBe(
+          "Transaction failed: transaction failed (rollback also failed: rollback failed)",
+        );
+        expect(error.cause).toBe(transactionError);
+      }
+
+      expect(pgClient.query).toHaveBeenCalledTimes(2);
+      expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
+      expect(pgClient.query).toHaveBeenNthCalledWith(2, "ROLLBACK");
+    });
+  });
 });
