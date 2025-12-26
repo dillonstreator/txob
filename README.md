@@ -48,6 +48,29 @@ await db.commit(); // 💥 Fails! Message is in queue but no user record
 
 **The Transactional Outbox Pattern** solves this by storing both the business data and events in a single database transaction, then processing events asynchronously with guaranteed delivery.
 
+```typescript
+// ✅ Solution: Save both user and event in the same transaction
+await db.query("BEGIN");
+
+// Save your business data
+await db.query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3)", [
+  userId,
+  email,
+  name,
+]);
+
+// Save the event in the SAME transaction
+await db.query(
+  "INSERT INTO events (id, type, data, correlation_id, handler_results, errors) VALUES ($1, $2, $3, $4, $5, $6)",
+  [randomUUID(), "UserCreated", { userId, email }, correlationId, {}, 0],
+);
+
+await db.query("COMMIT");
+// ✅ Both user and event are saved atomically!
+// If commit fails, neither is saved. If it succeeds, both are saved.
+// The processor will pick up the event and send the email (and any other side effects that you register) asynchronously
+```
+
 ## Features
 
 - ✅ **At-least-once delivery** - Events are never lost, even during failures or crashes
@@ -107,11 +130,19 @@ await client.connect();
 
 const processor = EventProcessor(createProcessorClient(client), {
   UserCreated: {
+    // Handlers are processed concurrently and independently with retries
+    // If one handler fails, others continue processing
     sendWelcomeEmail: async (event, { signal }) => {
       await emailService.send({
         to: event.data.email,
         subject: "Welcome!",
         template: "welcome",
+      });
+    },
+    createStripeCustomer: async (event, { signal }) => {
+      await stripe.customers.create({
+        email: event.data.email,
+        metadata: { userId: event.data.userId },
       });
     },
   },
