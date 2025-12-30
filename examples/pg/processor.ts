@@ -7,9 +7,10 @@ import {
 import { createProcessorClient } from "../../src/pg/client.js";
 import { migrate, type EventType, eventTypes } from "./server.js";
 import dotenv from "dotenv";
+import { sleep } from "../../src/sleep.js";
 dotenv.config();
 
-let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
+let processor: EventProcessor<EventType> | undefined = undefined;
 
 (async () => {
   const client = new pg.Client({
@@ -21,9 +22,9 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
   await client.connect();
   await migrate(client);
 
-  processor = EventProcessor(
-    createProcessorClient<EventType>(client),
-    {
+  processor = new EventProcessor<EventType>({
+    client: createProcessorClient<EventType>(client),
+    handlerMap: {
       ResourceSaved: {
         thing1: async (event) => {
           console.log(`${event.id} thing1 ${event.correlation_id}`);
@@ -40,6 +41,7 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
           return;
         },
         thing3: async (event) => {
+          await sleep(20_000);
           console.log(`${event.id} thing3 ${event.correlation_id}`);
           if (Math.random() > 0.75) throw new Error("some issue");
 
@@ -51,40 +53,39 @@ let processor: ReturnType<typeof EventProcessor> | undefined = undefined;
         // For example, you might want to send alerts or log to external systems
       },
     },
-    {
-      sleepTimeMs: 5000,
-      logger: console,
-      onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
-        // Transactionally persist an 'event max errors reached' event
-        // This hook is called when:
-        // - Maximum allowed errors are reached
-        // - An unprocessable error is encountered
-        // - Event handler map is missing for the event type
+    pollingIntervalMs: 5000,
+    logger: console,
+    onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
+      // Transactionally persist an 'event max errors reached' event
+      // This hook is called when:
+      // - Maximum allowed errors are reached
+      // - An unprocessable error is encountered
+      // - Event handler map is missing for the event type
 
-        // Use the abort signal for cleanup during graceful shutdown
-        if (signal?.aborted) {
-          return;
-        }
+      // Use the abort signal for cleanup during graceful shutdown
+      if (signal?.aborted) {
+        return;
+      }
 
-        await txClient.createEvent({
-          id: randomUUID(),
-          timestamp: new Date(),
-          type: eventTypes.EventMaxErrorsReached,
-          data: {
-            failedEventId: event.id,
-            failedEventType: event.type,
-            failedEventCorrelationId: event.correlation_id,
-          },
-          correlation_id: event.correlation_id,
-          handler_results: {},
-          errors: 0,
-        });
-
-        console.log("Event max errors reached event created", {
+      await txClient.createEvent({
+        id: randomUUID(),
+        timestamp: new Date(),
+        type: eventTypes.EventMaxErrorsReached,
+        data: {
           failedEventId: event.id,
-        });
-      },
+          failedEventType: event.type,
+          failedEventCorrelationId: event.correlation_id,
+        },
+        correlation_id: event.correlation_id,
+        handler_results: {},
+        errors: 0,
+      });
+
+      console.log("Event max errors reached event created", {
+        failedEventId: event.id,
+      });
     },
+  },
   );
   processor.start();
 })();
