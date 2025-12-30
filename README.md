@@ -80,7 +80,7 @@ await db.query("COMMIT");
 - ✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
 - ✅ **TypeScript-first** - Full type safety and autocompletion
 - ✅ **Handler result tracking** - Track the execution status of each handler independently
-- ✅ **Minimal dependencies** - Only `p-limit` (plus your database driver)
+- ✅ **Minimal dependencies** - Only `p-limit` and `p-queue` (plus your database driver)
 
 ## Quick Start
 

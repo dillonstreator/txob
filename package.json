@@ -58,7 +58,8 @@
     "format": "prettier -w ."
   },
   "dependencies": {
-    "p-limit": "^7.2.0"
+    "p-limit": "^7.2.0",
+    "p-queue": "^9.0.1"
   },
   "peerDependencies": {
     "mongodb": "^7.0.0",

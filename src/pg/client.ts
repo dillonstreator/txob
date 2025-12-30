@@ -24,7 +24,7 @@ export const createProcessorClient = <EventType extends string>(
     const events = await querier.query<
       Pick<TxOBEvent<EventType>, "id" | "errors">
     >(
-      `SELECT id, errors FROM ${escapeIdentifier(table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1 LIMIT ${limit}`,
+      `SELECT id, errors FROM ${escapeIdentifier(table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1 ORDER BY timestamp ASC LIMIT ${limit}`,
       [opts.maxErrors],
     );
     return events.rows;
