@@ -418,32 +418,38 @@ export class EventProcessor<TxOBEventType extends string> {
 
             for (const event of unqueuedEvents) {
               queuedEventIds.add(event.id);
-              this.queue.add(
-                async () => {
-                  try {
-                    await processEvent<TxOBEventType>({
-                      client: this.client,
-                      handlerMap: this.handlerMap,
-                      unlockedEvent: event,
-                      opts: {
-                        ...this.opts,
-                        signal: this.abortController.signal,
-                      },
-                    });
-                  } catch (error) {
-                    this.opts.logger?.error(
-                      {
-                        eventId: event.id,
-                        error,
-                      },
-                      "error processing event",
-                    );
-                  } finally {
-                    queuedEventIds.delete(event.id);
-                  }
-                },
-                { signal: this.abortController.signal },
-              );
+              this.queue
+                .add(
+                  async () => {
+                    try {
+                      await processEvent<TxOBEventType>({
+                        client: this.client,
+                        handlerMap: this.handlerMap,
+                        unlockedEvent: event,
+                        opts: {
+                          ...this.opts,
+                          signal: this.abortController.signal,
+                        },
+                      });
+                    } catch (error) {
+                      this.opts.logger?.error(
+                        {
+                          eventId: event.id,
+                          error,
+                        },
+                        "error processing event",
+                      );
+                    } finally {
+                      queuedEventIds.delete(event.id);
+                    }
+                  },
+                  { signal: this.abortController.signal },
+                )
+                .catch((error) => {
+                  // Handle queue.add() rejections (e.g., when aborted)
+                  // The event processing error is already logged in the task's catch block
+                  queuedEventIds.delete(event.id);
+                });
             }
           } catch (error) {
             this.opts.logger?.error(
@@ -479,8 +485,14 @@ export class EventProcessor<TxOBEventType extends string> {
 
     let caughtErr: unknown;
     try {
+      // Wait for both the queue to be empty and the polling loop to complete
       await Promise.race([
-        this.queue.onPendingZero(),
+        Promise.all([
+          this.queue.onPendingZero(),
+          this.pollingPromise?.catch(() => {
+            // Ignore polling loop errors - they're expected when aborting
+          }) ?? Promise.resolve(),
+        ]),
         sleep(_stopOpts.timeoutMs).then(() => {
           throw new Error(
             `shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`,
