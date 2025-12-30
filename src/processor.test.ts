@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventProcessor, TxOBEvent, defaultBackoff } from "./processor.js";
-import { TxobError, ErrorUnprocessableEventHandler } from "./error.js";
+import { TxOBError, ErrorUnprocessableEventHandler } from "./error.js";
 import { sleep } from "./sleep.js";
 
 const mockTxClient = {
@@ -760,7 +760,7 @@ describe("EventProcessor - processEvents", () => {
     );
   });
 
-  it("should use the latest backoff when multiple TxobErrors have different backoffUntil dates", async () => {
+  it("should use the latest backoff when multiple TxOBErrors have different backoffUntil dates", async () => {
     const opts = {
       maxErrors: 5,
       backoff: vi.fn(() => new Date(now.getTime() + 5000)), // Default backoff: 5 seconds
@@ -772,9 +772,9 @@ describe("EventProcessor - processEvents", () => {
     const backoff2 = new Date(now.getTime() + 20000); // 20 seconds (latest)
     const backoff3 = new Date(now.getTime() + 15000); // 15 seconds
 
-    const error1 = new TxobError("error 1", { backoffUntil: backoff1 });
-    const error2 = new TxobError("error 2", { backoffUntil: backoff2 });
-    const error3 = new TxobError("error 3", { backoffUntil: backoff3 });
+    const error1 = new TxOBError("error 1", { backoffUntil: backoff1 });
+    const error2 = new TxOBError("error 2", { backoffUntil: backoff2 });
+    const error3 = new TxOBError("error 3", { backoffUntil: backoff3 });
 
     const handlerMap = {
       evtType1: {
@@ -834,7 +834,7 @@ describe("EventProcessor - processEvents", () => {
     expect(updateCall.errors).toBe(1);
   });
 
-  it("should use the latest backoff when TxobError backoff is later than default backoff", async () => {
+  it("should use the latest backoff when TxOBError backoff is later than default backoff", async () => {
     const laterBackoff = new Date(now.getTime() + 30000); // 30 seconds
     const defaultBackoffTime = new Date(now.getTime() + 5000); // 5 seconds
 
@@ -844,7 +844,7 @@ describe("EventProcessor - processEvents", () => {
       pollingIntervalMs: 10,
     };
 
-    const error = new TxobError("error with backoff", {
+    const error = new TxOBError("error with backoff", {
       backoffUntil: laterBackoff,
     });
 
@@ -897,7 +897,7 @@ describe("EventProcessor - processEvents", () => {
     );
   });
 
-  it("should use default backoff when TxobError backoff is earlier than default backoff", async () => {
+  it("should use default backoff when TxOBError backoff is earlier than default backoff", async () => {
     const earlierBackoff = new Date(now.getTime() + 2000); // 2 seconds
     const defaultBackoffTime = new Date(now.getTime() + 5000); // 5 seconds
 
@@ -907,7 +907,7 @@ describe("EventProcessor - processEvents", () => {
       pollingIntervalMs: 10,
     };
 
-    const error = new TxobError("error with backoff", {
+    const error = new TxOBError("error with backoff", {
       backoffUntil: earlierBackoff,
     });
 

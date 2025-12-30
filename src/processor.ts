@@ -3,7 +3,7 @@ import { sleep } from "./sleep.js";
 import pLimit from "p-limit";
 import { deepClone } from "./clone.js";
 import PQueue from "p-queue";
-import { ErrorUnprocessableEventHandler, TxobError } from "./error.js";
+import { ErrorUnprocessableEventHandler, TxOBError } from "./error.js";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -266,7 +266,7 @@ const processEvent = async <TxOBEventType extends string>({
               });
               errored = true;
             } else {
-              if (error instanceof TxobError && error.backoffUntil) {
+              if (error instanceof TxOBError && error.backoffUntil) {
                 backoffs.push(error.backoffUntil);
               }
 

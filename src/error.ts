@@ -1,25 +1,25 @@
 /**
- * TxobError can be thrown by an event handler to indicate that the event processing should be retried.
+ * TxOBError can be thrown by an event handler to indicate that the event processing should be retried.
  * It allows handlers to specify a custom backoff time via the `backoffUntil` property.
  *
- * When multiple handlers throw TxobError with different `backoffUntil` dates, the processor will use
+ * When multiple handlers throw TxOBError with different `backoffUntil` dates, the processor will use
  * the latest (maximum) backoff time among all handlers and the default backoff calculation.
  *
  * @example
  * ```typescript
  * // Throw an error with a custom backoff time
- * throw new TxobError("Rate limit exceeded", {
+ * throw new TxOBError("Rate limit exceeded", {
  *   backoffUntil: new Date(Date.now() + 60000) // Retry after 1 minute
  * });
  *
  * // Throw an error with a cause
- * throw new TxobError("Processing failed", {
+ * throw new TxOBError("Processing failed", {
  *   cause: originalError,
  *   backoffUntil: new Date(Date.now() + 30000) // Retry after 30 seconds
  * });
  * ```
  */
-export class TxobError extends Error {
+export class TxOBError extends Error {
   /**
    * Optional date indicating when the event should be retried.
    * If provided, this backoff time will be considered along with the default backoff calculation,
