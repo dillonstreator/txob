@@ -25,13 +25,13 @@
     "dist",
     "README.md"
   ],
-  "main": "./dist/cjs/processor.js",
-  "types": "dist/processor.d.ts",
+  "main": "./dist/cjs/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/processor.d.ts",
-      "import": "./dist/processor.js",
-      "require": "./dist/cjs/processor.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
     },
     "./pg": {
       "types": "./dist/pg/client.d.ts",

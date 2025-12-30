@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import {
-  EventProcessor,
-  TxOBEvent,
-  ErrorUnprocessableEventHandler,
-  defaultBackoff,
-} from "./processor.js";
+import { EventProcessor, TxOBEvent, defaultBackoff } from "./processor.js";
+import { TxobError, ErrorUnprocessableEventHandler } from "./error.js";
 import { sleep } from "./sleep.js";
 
 const mockTxClient = {
@@ -761,6 +757,206 @@ describe("EventProcessor - processEvents", () => {
         error: hookError,
       },
       "error processing event",
+    );
+  });
+
+  it("should use the latest backoff when multiple TxobErrors have different backoffUntil dates", async () => {
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(() => new Date(now.getTime() + 5000)), // Default backoff: 5 seconds
+      pollingIntervalMs: 10,
+    };
+
+    // Create different backoff times
+    const backoff1 = new Date(now.getTime() + 10000); // 10 seconds
+    const backoff2 = new Date(now.getTime() + 20000); // 20 seconds (latest)
+    const backoff3 = new Date(now.getTime() + 15000); // 15 seconds
+
+    const error1 = new TxobError("error 1", { backoffUntil: backoff1 });
+    const error2 = new TxobError("error 2", { backoffUntil: backoff2 });
+    const error3 = new TxobError("error 3", { backoffUntil: backoff3 });
+
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(error1)),
+        handler2: vi.fn(() => Promise.reject(error2)),
+        handler3: vi.fn(() => Promise.reject(error3)),
+      },
+    };
+
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+
+    const events = [evt1];
+    let callCount = 0;
+    mockClient.getEventsToProcess.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve(callCount === 1 ? events : []);
+    });
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return Promise.resolve(events.find((e) => e.id === id) ?? null);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    const processor = new EventProcessor({
+      client: mockClient,
+      handlerMap,
+      ...opts,
+    });
+    processor.start();
+    await sleep(50); // Wait for processing
+    await processor.stop();
+
+    expect(mockClient.getEventsToProcess).toHaveBeenCalled();
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+
+    // All handlers should have been called
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler2).toHaveBeenCalledOnce();
+    expect(handlerMap.evtType1.handler3).toHaveBeenCalledOnce();
+
+    // Default backoff should also be called
+    expect(opts.backoff).toHaveBeenCalledWith(1);
+
+    // The latest backoff (backoff2 = 20 seconds) should be used
+    expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
+    const updateCall = mockTxClient.updateEvent.mock.calls[0][0];
+    expect(updateCall.backoff_until).toEqual(backoff2);
+    expect(updateCall.errors).toBe(1);
+  });
+
+  it("should use the latest backoff when TxobError backoff is later than default backoff", async () => {
+    const laterBackoff = new Date(now.getTime() + 30000); // 30 seconds
+    const defaultBackoffTime = new Date(now.getTime() + 5000); // 5 seconds
+
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(() => defaultBackoffTime),
+      pollingIntervalMs: 10,
+    };
+
+    const error = new TxobError("error with backoff", {
+      backoffUntil: laterBackoff,
+    });
+
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(error)),
+      },
+    };
+
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+
+    const events = [evt1];
+    let callCount = 0;
+    mockClient.getEventsToProcess.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve(callCount === 1 ? events : []);
+    });
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return Promise.resolve(events.find((e) => e.id === id) ?? null);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    const processor = new EventProcessor({
+      client: mockClient,
+      handlerMap,
+      ...opts,
+    });
+    processor.start();
+    await sleep(50); // Wait for processing
+    await processor.stop();
+
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+    expect(opts.backoff).toHaveBeenCalledWith(1);
+
+    // The latest backoff (laterBackoff = 30 seconds) should be used, not the default (5 seconds)
+    const updateCall = mockTxClient.updateEvent.mock.calls[0][0];
+    expect(updateCall.backoff_until).toEqual(laterBackoff);
+    expect(updateCall.backoff_until?.getTime()).toBeGreaterThan(
+      defaultBackoffTime.getTime(),
+    );
+  });
+
+  it("should use default backoff when TxobError backoff is earlier than default backoff", async () => {
+    const earlierBackoff = new Date(now.getTime() + 2000); // 2 seconds
+    const defaultBackoffTime = new Date(now.getTime() + 5000); // 5 seconds
+
+    const opts = {
+      maxErrors: 5,
+      backoff: vi.fn(() => defaultBackoffTime),
+      pollingIntervalMs: 10,
+    };
+
+    const error = new TxobError("error with backoff", {
+      backoffUntil: earlierBackoff,
+    });
+
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.reject(error)),
+      },
+    };
+
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+
+    const events = [evt1];
+    let callCount = 0;
+    mockClient.getEventsToProcess.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve(callCount === 1 ? events : []);
+    });
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation((id) => {
+      return Promise.resolve(events.find((e) => e.id === id) ?? null);
+    });
+    mockTxClient.updateEvent.mockImplementation(() => {
+      return Promise.resolve();
+    });
+
+    const processor = new EventProcessor({
+      client: mockClient,
+      handlerMap,
+      ...opts,
+    });
+    processor.start();
+    await sleep(50); // Wait for processing
+    await processor.stop();
+
+    expect(mockClient.transaction).toHaveBeenCalledTimes(1);
+    expect(opts.backoff).toHaveBeenCalledWith(1);
+
+    // The latest backoff (defaultBackoffTime = 5 seconds) should be used, not the earlier one (2 seconds)
+    const updateCall = mockTxClient.updateEvent.mock.calls[0][0];
+    expect(updateCall.backoff_until).toEqual(defaultBackoffTime);
+    expect(updateCall.backoff_until?.getTime()).toBeGreaterThan(
+      earlierBackoff.getTime(),
     );
   });
 });

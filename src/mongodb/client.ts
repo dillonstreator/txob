@@ -37,7 +37,7 @@ export const createProcessorClient = <EventType extends string>(
       .find(filter)
       .project({ id: 1, errors: 1 })
       .limit(limit)
-      .sort('timestamp', 'asc')
+      .sort("timestamp", "asc")
       .toArray()) as Pick<TxOBEvent<EventType>, "id" | "errors">[];
 
     return events;

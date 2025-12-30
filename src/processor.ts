@@ -3,6 +3,7 @@ import { sleep } from "./sleep.js";
 import pLimit from "p-limit";
 import { deepClone } from "./clone.js";
 import PQueue from "p-queue";
+import { ErrorUnprocessableEventHandler, TxobError } from "./error.js";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -199,6 +200,8 @@ const processEvent = async <TxOBEventType extends string>({
       `processing event`,
     );
 
+    let backoffs: Date[] = [];
+
     const handlerLimit = pLimit(maxHandlerConcurrency);
     await Promise.allSettled(
       Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
@@ -263,6 +266,10 @@ const processEvent = async <TxOBEventType extends string>({
               });
               errored = true;
             } else {
+              if (error instanceof TxobError && error.backoffUntil) {
+                backoffs.push(error.backoffUntil);
+              }
+
               errored = true;
               handlerResults.errors?.push({
                 error: (error as Error)?.message ?? error,
@@ -299,7 +306,11 @@ const processEvent = async <TxOBEventType extends string>({
 
     if (errored) {
       lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
-      lockedEvent.backoff_until = backoff(lockedEvent.errors);
+      backoffs.push(backoff(lockedEvent.errors));
+      const latestBackoff = backoffs.sort(
+        (a, b) => b.getTime() - a.getTime(),
+      )[0];
+      lockedEvent.backoff_until = latestBackoff;
       if (lockedEvent.errors === maxErrors) {
         lockedEvent.backoff_until = null;
         lockedEvent.processed_at = getDate();
@@ -332,21 +343,6 @@ const processEvent = async <TxOBEventType extends string>({
     await txClient.updateEvent(lockedEvent);
   });
 };
-
-/**
- * ErrorUnprocessableEventHandler can be thrown by an event handler to indicate that the event handler is unprocessable.
- * It wraps the original error that caused the handler to be unprocessable.
- * This error will signal the processor to stop processing the event handler and mark the event handler as unprocessable.
- */
-export class ErrorUnprocessableEventHandler extends Error {
-  error: Error;
-
-  constructor(error: Error) {
-    const message = `unprocessable event handler: ${error.message}`;
-    super(message);
-    this.error = error;
-  }
-}
 
 export interface Logger {
   debug(message?: unknown, ...optionalParams: unknown[]): void;
