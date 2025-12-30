@@ -1,8 +1,8 @@
 import { getDate } from "./date.js";
-import EventEmitter from "node:events";
 import { sleep } from "./sleep.js";
 import pLimit from "p-limit";
 import { deepClone } from "./clone.js";
+import PQueue from "p-queue";
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -73,8 +73,9 @@ export const defaultBackoff = (errorCount: number): Date => {
 
   return retryTimestamp;
 };
+const defaultPollingIntervalMs = 5000;
 const defaultMaxErrors = 5;
-const defaultMaxEventConcurrency = 5;
+const defaultMaxEventConcurrency = 20;
 const defaultMaxHandlerConcurrency = 10;
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
@@ -91,270 +92,245 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   }) => Promise<void>;
 };
 
-export const processEvents = async <TxOBEventType extends string>(
-  client: TxOBProcessorClient<TxOBEventType>,
-  handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-  opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>,
-): Promise<void> => {
-  const {
-    maxErrors = defaultMaxErrors,
-    backoff = defaultBackoff,
-    maxEventConcurrency = defaultMaxEventConcurrency,
-    maxHandlerConcurrency = defaultMaxHandlerConcurrency,
-    logger,
-    signal,
-    onEventMaxErrorsReached,
-  } = opts ?? {};
+const processEvent = async <TxOBEventType extends string>(
+  { client, handlerMap, unlockedEvent, opts }: {
+    client: TxOBProcessorClient<TxOBEventType>,
+    handlerMap: TxOBEventHandlerMap<TxOBEventType>,
+    unlockedEvent: Pick<TxOBEvent<TxOBEventType>, "id" | "errors">,
+    opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>,
+  }
+) => {
+  const { logger, maxErrors = defaultMaxErrors, signal, backoff = defaultBackoff, maxHandlerConcurrency = defaultMaxHandlerConcurrency, onEventMaxErrorsReached } = opts ?? {};
 
-  const events = await client.getEventsToProcess({ maxErrors, signal });
-  logger?.debug(`found ${events.length} events to process`);
+  if (signal?.aborted) {
+    return;
+  }
+  if (unlockedEvent.errors >= maxErrors) {
+    // Potential issue with client configuration on finding unprocessed events
+    // Events with maximum allowed errors should not be returned from `getEventsToProcess`
+    logger?.warn(
+      {
+        eventId: unlockedEvent.id,
+        errors: unlockedEvent.errors,
+        maxErrors,
+      },
+      "unexpected event with max errors returned from `getEventsToProcess`",
+    );
+    return;
+  }
 
-  const eventLimit = pLimit(maxEventConcurrency);
-  await Promise.allSettled(
-    events.map((unlockedEvent) =>
-      eventLimit(async () => {
-        if (signal?.aborted) {
-          return;
-        }
-        if (unlockedEvent.errors >= maxErrors) {
-          // Potential issue with client configuration on finding unprocessed events
-          // Events with maximum allowed errors should not be returned from `getEventsToProcess`
-          logger?.warn(
-            {
-              eventId: unlockedEvent.id,
-              errors: unlockedEvent.errors,
-              maxErrors,
-            },
-            "unexpected event with max errors returned from `getEventsToProcess`",
-          );
-          return;
-        }
+  await client.transaction(async (txClient) => {
+    const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
+      unlockedEvent.id,
+      { signal, maxErrors },
+    );
+    if (!lockedEvent) {
+      logger?.debug(
+        {
+          eventId: unlockedEvent.id,
+        },
+        "skipping locked or already processed event",
+      );
+      return;
+    }
 
-        try {
-          await client.transaction(async (txClient) => {
-            const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
-              unlockedEvent.id,
-              { signal, maxErrors },
-            );
-            if (!lockedEvent) {
-              logger?.debug(
-                {
-                  eventId: unlockedEvent.id,
-                },
-                "skipping locked or already processed event",
-              );
-              return;
-            }
+    // While unlikely, the following two conditions are possible if a concurrent processor finished processing this event or reaching maximum errors between the time
+    // that this processor found the event with `getEventsToProcess` and called `getEventByIdForUpdateSkipLocked`
+    // `getEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
+    if (lockedEvent.processed_at) {
+      logger?.debug(
+        {
+          eventId: lockedEvent.id,
+          correlationId: lockedEvent.correlation_id,
+        },
+        "skipping already processed event",
+      );
+      return;
+    }
+    if (lockedEvent.errors >= maxErrors) {
+      logger?.debug(
+        {
+          eventId: lockedEvent.id,
+          correlationId: lockedEvent.correlation_id,
+        },
+        "skipping event with maximum errors",
+      );
+      return;
+    }
 
-            // While unlikely, the following two conditions are possible if a concurrent processor finished processing this event or reaching maximum errors between the time
-            // that this processor found the event with `getEventsToProcess` and called `getEventByIdForUpdateSkipLocked`
-            // `getEventByIdForUpdateSkipLocked` should handle this in its query implementation and return null to save resources
-            if (lockedEvent.processed_at) {
-              logger?.debug(
-                {
-                  eventId: lockedEvent.id,
-                  correlationId: lockedEvent.correlation_id,
-                },
-                "skipping already processed event",
-              );
-              return;
-            }
-            if (lockedEvent.errors >= maxErrors) {
-              logger?.debug(
-                {
-                  eventId: lockedEvent.id,
-                  correlationId: lockedEvent.correlation_id,
-                },
-                "skipping event with maximum errors",
-              );
-              return;
-            }
+    let errored = false;
 
-            let errored = false;
+    const eventHandlerMap = handlerMap[lockedEvent.type] ?? {};
 
-            const eventHandlerMap = handlerMap[lockedEvent.type] ?? {};
+    // Typescript should prevent the caller from passing a handler map that doesn't specify all event types but we'll check for it anyway
+    // This is distinct from an empty handler map for an event type which is valid
+    // We just want the caller to be explicit about the event types they are interested in handling and not accidentally skip events
+    if (!(lockedEvent.type in handlerMap)) {
+      logger?.warn(
+        {
+          eventId: lockedEvent.id,
+          type: lockedEvent.type,
+          correlationId: lockedEvent.correlation_id,
+        },
+        "missing event handler map",
+      );
+      errored = true;
+      lockedEvent.errors = maxErrors;
+    }
 
-            // Typescript should prevent the caller from passing a handler map that doesn't specify all event types but we'll check for it anyway
-            // This is distinct from an empty handler map for an event type which is valid
-            // We just want the caller to be explicit about the event types they are interested in handling and not accidentally skip events
-            if (!(lockedEvent.type in handlerMap)) {
-              logger?.warn(
-                {
-                  eventId: lockedEvent.id,
-                  type: lockedEvent.type,
-                  correlationId: lockedEvent.correlation_id,
-                },
-                "missing event handler map",
-              );
-              errored = true;
-              lockedEvent.errors = maxErrors;
-            }
+    logger?.debug(
+      {
+        eventId: lockedEvent.id,
+        type: lockedEvent.type,
+        correlationId: lockedEvent.correlation_id,
+      },
+      `processing event`,
+    );
 
+    const handlerLimit = pLimit(maxHandlerConcurrency);
+    await Promise.allSettled(
+      Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
+        handlerLimit(async (): Promise<void> => {
+          const handlerResults =
+            lockedEvent.handler_results[handlerName] ?? {};
+          if (handlerResults.processed_at) {
             logger?.debug(
               {
                 eventId: lockedEvent.id,
                 type: lockedEvent.type,
+                handlerName,
                 correlationId: lockedEvent.correlation_id,
               },
-              `processing event`,
+              "handler already processed",
             );
-
-            const handlerLimit = pLimit(maxHandlerConcurrency);
-            await Promise.allSettled(
-              Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
-                handlerLimit(async (): Promise<void> => {
-                  const handlerResults =
-                    lockedEvent.handler_results[handlerName] ?? {};
-                  if (handlerResults.processed_at) {
-                    logger?.debug(
-                      {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
-                      },
-                      "handler already processed",
-                    );
-                    return;
-                  }
-                  if (handlerResults.unprocessable_at) {
-                    logger?.debug(
-                      {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
-                      },
-                      "handler unprocessable",
-                    );
-                    return;
-                  }
-
-                  handlerResults.errors ??= [];
-
-                  try {
-                    await handler(lockedEvent, { signal });
-                    handlerResults.processed_at = getDate();
-                    logger?.debug(
-                      {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        correlationId: lockedEvent.correlation_id,
-                      },
-                      "handler succeeded",
-                    );
-                  } catch (error) {
-                    logger?.error(
-                      {
-                        eventId: lockedEvent.id,
-                        type: lockedEvent.type,
-                        handlerName,
-                        error,
-                        correlationId: lockedEvent.correlation_id,
-                      },
-                      "handler errored",
-                    );
-
-                    if (error instanceof ErrorUnprocessableEventHandler) {
-                      handlerResults.unprocessable_at = getDate();
-                      handlerResults.errors?.push({
-                        error: error.message ?? error,
-                        timestamp: getDate(),
-                      });
-                      errored = true;
-                    } else {
-                      errored = true;
-                      handlerResults.errors?.push({
-                        error: (error as Error)?.message ?? error,
-                        timestamp: getDate(),
-                      });
-                    }
-                  }
-
-                  lockedEvent.handler_results[handlerName] = handlerResults;
-                }),
-              ),
-            );
-
-            // Check if all remaining handlers (those that haven't succeeded) are unprocessable
-            // If so, there's nothing left to retry, so set errors to maxErrors to stop processing
-            const remainingHandlers = Object.entries(eventHandlerMap).filter(
-              ([handlerName, _]) => {
-                const result = lockedEvent.handler_results[handlerName];
-                return !result?.processed_at;
+            return;
+          }
+          if (handlerResults.unprocessable_at) {
+            logger?.debug(
+              {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                handlerName,
+                correlationId: lockedEvent.correlation_id,
               },
+              "handler unprocessable",
+            );
+            return;
+          }
+
+          handlerResults.errors ??= [];
+
+          try {
+            await handler(lockedEvent, { signal });
+            handlerResults.processed_at = getDate();
+            logger?.debug(
+              {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                handlerName,
+                correlationId: lockedEvent.correlation_id,
+              },
+              "handler succeeded",
+            );
+          } catch (error) {
+            logger?.error(
+              {
+                eventId: lockedEvent.id,
+                type: lockedEvent.type,
+                handlerName,
+                error,
+                correlationId: lockedEvent.correlation_id,
+              },
+              "handler errored",
             );
 
-            const allRemainingHandlersUnprocessable =
-              remainingHandlers.length > 0 &&
-              remainingHandlers.every(([handlerName, _]) => {
-                const result = lockedEvent.handler_results[handlerName];
-                return result?.unprocessable_at;
+            if (error instanceof ErrorUnprocessableEventHandler) {
+              handlerResults.unprocessable_at = getDate();
+              handlerResults.errors?.push({
+                error: error.message ?? error,
+                timestamp: getDate(),
               });
-
-            if (allRemainingHandlersUnprocessable) {
-              lockedEvent.errors = maxErrors;
               errored = true;
-            }
-
-            if (errored) {
-              lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
-              lockedEvent.backoff_until = backoff(lockedEvent.errors);
-              if (lockedEvent.errors === maxErrors) {
-                lockedEvent.backoff_until = null;
-                lockedEvent.processed_at = getDate();
-
-                if (onEventMaxErrorsReached) {
-                  try {
-                    await onEventMaxErrorsReached({
-                      event: deepClone(lockedEvent),
-                      txClient,
-                      signal,
-                    });
-                  } catch (hookError) {
-                    logger?.error(
-                      {
-                        eventId: lockedEvent.id,
-                        error: hookError,
-                      },
-                      "error in onEventMaxErrorsReached hook",
-                    );
-
-                    throw hookError;
-                  }
-                }
-              }
             } else {
-              lockedEvent.backoff_until = null;
-              lockedEvent.processed_at = getDate();
+              errored = true;
+              handlerResults.errors?.push({
+                error: (error as Error)?.message ?? error,
+                timestamp: getDate(),
+              });
             }
+          }
 
-            logger?.debug(
+          lockedEvent.handler_results[handlerName] = handlerResults;
+        }),
+      ),
+    );
+
+    // Check if all remaining handlers (those that haven't succeeded) are unprocessable
+    // If so, there's nothing left to retry, so set errors to maxErrors to stop processing
+    const remainingHandlers = Object.entries(eventHandlerMap).filter(
+      ([handlerName, _]) => {
+        const result = lockedEvent.handler_results[handlerName];
+        return !result?.processed_at;
+      },
+    );
+
+    const allRemainingHandlersUnprocessable =
+      remainingHandlers.length > 0 &&
+      remainingHandlers.every(([handlerName, _]) => {
+        const result = lockedEvent.handler_results[handlerName];
+        return result?.unprocessable_at;
+      });
+
+    if (allRemainingHandlersUnprocessable) {
+      lockedEvent.errors = maxErrors;
+      errored = true;
+    }
+
+    if (errored) {
+      lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
+      lockedEvent.backoff_until = backoff(lockedEvent.errors);
+      if (lockedEvent.errors === maxErrors) {
+        lockedEvent.backoff_until = null;
+        lockedEvent.processed_at = getDate();
+
+        if (onEventMaxErrorsReached) {
+          try {
+            await onEventMaxErrorsReached({
+              event: deepClone(lockedEvent),
+              txClient,
+              signal,
+            });
+          } catch (hookError) {
+            logger?.error(
               {
                 eventId: lockedEvent.id,
-                type: lockedEvent.type,
-                lockedEvent,
-                correlationId: lockedEvent.correlation_id,
-                errored,
+                error: hookError,
               },
-              "updating event",
+              "error in onEventMaxErrorsReached hook",
             );
 
-            await txClient.updateEvent(lockedEvent);
-          });
-        } catch (error) {
-          logger?.error(
-            {
-              eventId: unlockedEvent.id,
-              error,
-            },
-            "error processing event",
-          );
+            throw hookError;
+          }
         }
-      }),
-    ),
-  );
+      }
+    } else {
+      lockedEvent.backoff_until = null;
+      lockedEvent.processed_at = getDate();
+    }
+
+    logger?.debug(
+      {
+        eventId: lockedEvent.id,
+        type: lockedEvent.type,
+        lockedEvent,
+        correlationId: lockedEvent.correlation_id,
+        errored,
+      },
+      "updating event",
+    );
+
+    await txClient.updateEvent(lockedEvent);
+  });
 };
 
 /**
@@ -379,139 +355,148 @@ export interface Logger {
   error(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
-export const EventProcessor = <TxOBEventType extends string>(
-  client: TxOBProcessorClient<TxOBEventType>,
-  handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-  opts?: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
-    sleepTimeMs?: number;
-  },
-) => {
-  return Processor(
-    ({ signal }) => {
-      return processEvents(client, handlerMap, {
-        ...opts,
-        signal,
-      });
-    },
-    {
-      sleepTimeMs: opts?.sleepTimeMs,
-      logger: opts?.logger,
-    },
-  );
-};
 
-class SignalAbortedError extends Error {
-  constructor() {
-    super("signal aborted while awaiting next processor tick");
+export class EventProcessor<TxOBEventType extends string> {
+  private client: TxOBProcessorClient<TxOBEventType>;
+  private handlerMap: TxOBEventHandlerMap<TxOBEventType>;
+  private opts: Omit<TxOBProcessEventsOpts<TxOBEventType>, "signal"> & {
+    pollingIntervalMs: number;
+  };
+  private abortController: AbortController;
+  private queue: PQueue;
+  private state: "stopped" | "started" | "stopping" = "stopped";
+  private pollingPromise: Promise<void> | null = null;
+
+  constructor({ client, handlerMap, ...opts }: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
+    pollingIntervalMs?: number;
+  } & {
+    client: TxOBProcessorClient<TxOBEventType>,
+    handlerMap: TxOBEventHandlerMap<TxOBEventType>,
+  }) {
+    const _opts = {
+      pollingIntervalMs: defaultPollingIntervalMs,
+      maxErrors: defaultMaxErrors,
+      backoff: defaultBackoff,
+      maxEventConcurrency: defaultMaxEventConcurrency,
+      maxHandlerConcurrency: defaultMaxHandlerConcurrency,
+      ...opts,
+    };
+    this.client = client;
+    this.handlerMap = handlerMap;
+    this.opts = _opts;
+    this.abortController = new AbortController();
+    this.queue = new PQueue({
+      concurrency: _opts.maxEventConcurrency,
+    });
+  }
+
+  start() {
+    if (this.state !== "stopped") {
+      this.opts.logger?.warn(`cannot start processor from '${this.state}'`);
+      return;
+    }
+    this.state = "started";
+    this.opts.logger?.debug("processor started");
+
+    const queuedEventIds: Set<string> = new Set();
+
+    this.pollingPromise = (async () => {
+      try {
+        do {
+          try {
+            const events = await this.client.getEventsToProcess({
+              ...this.opts,
+              signal: this.abortController.signal,
+            });
+
+            const unqueuedEvents = events.filter(
+              (event) => !queuedEventIds.has(event.id),
+            );
+            this.opts.logger?.debug(
+              `found ${unqueuedEvents.length} events to process`,
+            );
+
+            for (const event of unqueuedEvents) {
+              queuedEventIds.add(event.id);
+              this.queue.add(
+                async () => {
+                  try {
+                    await processEvent<TxOBEventType>({
+                      client: this.client,
+                      handlerMap: this.handlerMap,
+                      unlockedEvent: event,
+                      opts: {
+                        ...this.opts,
+                        signal: this.abortController.signal,
+                      },
+                    });
+                  } catch (error) {
+                    this.opts.logger?.error(
+                      {
+                        eventId: event.id,
+                        error,
+                      },
+                      "error processing event",
+                    );
+                  } finally {
+                    queuedEventIds.delete(event.id);
+                  }
+                },
+                { signal: this.abortController.signal },
+              );
+            }
+          } catch (error) {
+            this.opts.logger?.error(
+              { error },
+              "error polling for events, will retry",
+            );
+            // Continue polling even on error
+          }
+
+          await sleep(this.opts.pollingIntervalMs);
+        } while (!this.abortController.signal.aborted);
+      } catch (error) {
+        this.opts.logger?.error({ error }, "polling loop error");
+      }
+    })();
+  }
+
+  async stop(opts?: { timeoutMs?: number }): Promise<void> {
+    if (this.state !== "started") {
+      this.opts.logger?.warn(`cannot stop processor from '${this.state}'`);
+      return;
+    }
+    this.state = "stopping";
+    this.opts.logger?.debug("processor stopping");
+
+    const _stopOpts = {
+      timeoutMs: 10000,
+      ...opts,
+    };
+
+    this.abortController.abort();
+    this.queue.pause();
+
+    let caughtErr: unknown;
+    try {
+      await Promise.race([
+        this.queue.onPendingZero(),
+        sleep(_stopOpts.timeoutMs).then(() => {
+          throw new Error(
+            `shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`,
+          );
+        }),
+      ]);
+    } catch (error) {
+      caughtErr = error;
+    }
+
+    this.state = "stopped";
+    this.opts.logger?.debug("processor stopped");
+
+    if (caughtErr) {
+      this.opts.logger?.error({ error: caughtErr }, "shutdown error");
+      throw caughtErr;
+    }
   }
 }
-
-export const Processor = (
-  fn: ({ signal }: { signal: AbortSignal }) => Promise<void>,
-  opts?: { sleepTimeMs?: number; logger?: Logger },
-) => {
-  let state: "started" | "stopped" | "stopping" = "stopped";
-  const ee = new EventEmitter();
-  const ac = new AbortController();
-  let shutdownCompleteEmitted = false;
-  const _opts = {
-    sleepTimeMs: opts?.sleepTimeMs ?? 5000,
-  };
-
-  return {
-    start: () => {
-      if (state !== "stopped") {
-        opts?.logger?.warn(`cannot start processor from '${state}'`);
-        return;
-      }
-      state = "started";
-      opts?.logger?.debug("processor started");
-
-      let abortListener: ((this: AbortSignal, ev: Event) => unknown) | null =
-        null;
-
-      (async () => {
-        while (true) {
-          opts?.logger?.debug("tick");
-          try {
-            await fn({ signal: ac.signal });
-
-            await Promise.race([
-              sleep(_opts.sleepTimeMs),
-              new Promise((_, reject) => {
-                if (ac.signal.aborted) return reject(new SignalAbortedError());
-
-                abortListener = () => reject(new SignalAbortedError());
-                ac.signal.addEventListener("abort", abortListener);
-              }),
-            ]);
-          } catch (error) {
-            if (error instanceof SignalAbortedError) {
-              opts?.logger?.debug(error.message);
-              break;
-            } else {
-              opts?.logger?.error(error);
-              await sleep(1000);
-            }
-          } finally {
-            if (abortListener)
-              ac.signal.removeEventListener("abort", abortListener);
-          }
-        }
-
-        ee.emit("shutdownComplete");
-        shutdownCompleteEmitted = true;
-      })();
-    },
-    stop: async (stopOpts?: { timeoutMs?: number }) => {
-      if (state !== "started") {
-        opts?.logger?.warn(`cannot stop processor from '${state}'`);
-        return;
-      }
-      state = "stopping";
-      opts?.logger?.debug("processor stopping");
-
-      const _stopOpts = {
-        timeoutMs: 10000,
-        ...stopOpts,
-      };
-
-      let caughtErr: unknown;
-      try {
-        await Promise.race([
-          new Promise<void>((resolve) => {
-            if (shutdownCompleteEmitted) {
-              opts?.logger?.debug("shutdownCompleteEmitted caught in shutdown");
-              return resolve();
-            }
-
-            ee.once("shutdownComplete", () => {
-              opts?.logger?.debug("shutdownComplete event caught in shutdown");
-              resolve();
-            });
-            opts?.logger?.debug("shutdown aborting AbortController");
-            ac.abort();
-          }),
-          new Promise((_, reject) => {
-            sleep(_stopOpts.timeoutMs).then(() => {
-              reject(
-                new Error(`shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`),
-              );
-            });
-          }),
-        ]);
-      } catch (error) {
-        caughtErr = error;
-      }
-
-      ee.removeAllListeners("shutdownComplete");
-      state = "stopped";
-      opts?.logger?.debug("processor stopped");
-
-      if (caughtErr) {
-        opts?.logger?.debug({ error: caughtErr }, "shutdown error");
-        throw caughtErr;
-      }
-    },
-  };
-};
