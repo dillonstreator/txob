@@ -92,15 +92,25 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   }) => Promise<void>;
 };
 
-const processEvent = async <TxOBEventType extends string>(
-  { client, handlerMap, unlockedEvent, opts }: {
-    client: TxOBProcessorClient<TxOBEventType>,
-    handlerMap: TxOBEventHandlerMap<TxOBEventType>,
-    unlockedEvent: Pick<TxOBEvent<TxOBEventType>, "id" | "errors">,
-    opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>,
-  }
-) => {
-  const { logger, maxErrors = defaultMaxErrors, signal, backoff = defaultBackoff, maxHandlerConcurrency = defaultMaxHandlerConcurrency, onEventMaxErrorsReached } = opts ?? {};
+const processEvent = async <TxOBEventType extends string>({
+  client,
+  handlerMap,
+  unlockedEvent,
+  opts,
+}: {
+  client: TxOBProcessorClient<TxOBEventType>;
+  handlerMap: TxOBEventHandlerMap<TxOBEventType>;
+  unlockedEvent: Pick<TxOBEvent<TxOBEventType>, "id" | "errors">;
+  opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>;
+}) => {
+  const {
+    logger,
+    maxErrors = defaultMaxErrors,
+    signal,
+    backoff = defaultBackoff,
+    maxHandlerConcurrency = defaultMaxHandlerConcurrency,
+    onEventMaxErrorsReached,
+  } = opts ?? {};
 
   if (signal?.aborted) {
     return;
@@ -191,8 +201,7 @@ const processEvent = async <TxOBEventType extends string>(
     await Promise.allSettled(
       Object.entries(eventHandlerMap).map(([handlerName, handler]) =>
         handlerLimit(async (): Promise<void> => {
-          const handlerResults =
-            lockedEvent.handler_results[handlerName] ?? {};
+          const handlerResults = lockedEvent.handler_results[handlerName] ?? {};
           if (handlerResults.processed_at) {
             logger?.debug(
               {
@@ -355,7 +364,6 @@ export interface Logger {
   error(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
-
 export class EventProcessor<TxOBEventType extends string> {
   private client: TxOBProcessorClient<TxOBEventType>;
   private handlerMap: TxOBEventHandlerMap<TxOBEventType>;
@@ -367,11 +375,15 @@ export class EventProcessor<TxOBEventType extends string> {
   private state: "stopped" | "started" | "stopping" = "stopped";
   private pollingPromise: Promise<void> | null = null;
 
-  constructor({ client, handlerMap, ...opts }: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
+  constructor({
+    client,
+    handlerMap,
+    ...opts
+  }: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
     pollingIntervalMs?: number;
   } & {
-    client: TxOBProcessorClient<TxOBEventType>,
-    handlerMap: TxOBEventHandlerMap<TxOBEventType>,
+    client: TxOBProcessorClient<TxOBEventType>;
+    handlerMap: TxOBEventHandlerMap<TxOBEventType>;
   }) {
     const _opts = {
       pollingIntervalMs: defaultPollingIntervalMs,
@@ -494,9 +506,7 @@ export class EventProcessor<TxOBEventType extends string> {
           }) ?? Promise.resolve(),
         ]),
         sleep(_stopOpts.timeoutMs).then(() => {
-          throw new Error(
-            `shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`,
-          );
+          throw new Error(`shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`);
         }),
       ]);
     } catch (error) {

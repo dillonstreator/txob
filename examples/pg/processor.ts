@@ -85,8 +85,7 @@ let processor: EventProcessor<EventType> | undefined = undefined;
         failedEventId: event.id,
       });
     },
-  },
-  );
+  });
   processor.start();
 })();
 

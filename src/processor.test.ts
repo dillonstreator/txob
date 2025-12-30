@@ -821,7 +821,9 @@ describe("EventProcessor - lifecycle", () => {
       callCount++;
       return Promise.resolve(callCount === 1 ? [evt1] : []);
     });
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() => Promise.resolve(evt1));
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
     mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
 
     const processor = new EventProcessor({
@@ -858,7 +860,9 @@ describe("EventProcessor - lifecycle", () => {
       callCount++;
       return Promise.resolve(callCount === 1 ? [evt1] : []);
     });
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() => Promise.resolve(evt1));
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
     mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
 
     const processor = new EventProcessor({
@@ -926,7 +930,9 @@ describe("EventProcessor - lifecycle", () => {
       callCount++;
       return Promise.resolve(callCount === 1 ? [evt1] : []);
     });
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() => Promise.resolve(evt1));
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
     mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
 
     const processor = new EventProcessor({
@@ -1003,7 +1009,9 @@ describe("EventProcessor - lifecycle", () => {
       callCount++;
       return Promise.resolve(callCount === 1 ? [evt1] : []);
     });
-    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() => Promise.resolve(evt1));
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
     mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
 
     const processor = new EventProcessor({
