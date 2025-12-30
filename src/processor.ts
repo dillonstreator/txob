@@ -373,7 +373,6 @@ export class EventProcessor<TxOBEventType extends string> {
   private abortController: AbortController;
   private queue: PQueue;
   private state: "stopped" | "started" | "stopping" = "stopped";
-  private pollingPromise: Promise<void> | null = null;
 
   constructor({
     client,
@@ -412,7 +411,7 @@ export class EventProcessor<TxOBEventType extends string> {
 
     const queuedEventIds: Set<string> = new Set();
 
-    this.pollingPromise = (async () => {
+    (async () => {
       try {
         do {
           try {
@@ -499,12 +498,7 @@ export class EventProcessor<TxOBEventType extends string> {
     try {
       // Wait for both the queue to be empty and the polling loop to complete
       await Promise.race([
-        Promise.all([
-          this.queue.onPendingZero(),
-          this.pollingPromise?.catch(() => {
-            // Ignore polling loop errors - they're expected when aborting
-          }) ?? Promise.resolve(),
-        ]),
+        this.queue.onPendingZero(),
         sleep(_stopOpts.timeoutMs).then(() => {
           throw new Error(`shutdown timeout ${_stopOpts.timeoutMs}ms elapsed`);
         }),
