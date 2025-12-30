@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   ErrorUnprocessableEventHandler,
   EventProcessor,
-} from "../../src/processor.js";
+} from "../../src/index.js";
 import { createProcessorClient } from "../../src/pg/client.js";
 import { migrate, type EventType, eventTypes } from "./server.js";
 import dotenv from "dotenv";
