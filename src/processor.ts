@@ -77,6 +77,7 @@ const defaultPollingIntervalMs = 5000;
 const defaultMaxErrors = 5;
 const defaultMaxEventConcurrency = 20;
 const defaultMaxHandlerConcurrency = 10;
+const defaultMaxQueuedEvents = 100;
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
@@ -85,6 +86,7 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   logger?: Logger;
   maxEventConcurrency?: number;
   maxHandlerConcurrency?: number;
+  maxQueuedEvents?: number;
   onEventMaxErrorsReached?: (opts: {
     event: Readonly<TxOBEvent<TxOBEventType>>;
     txClient: TxOBTransactionProcessorClient<TxOBEventType>;
@@ -327,17 +329,6 @@ const processEvent = async <TxOBEventType extends string>({
       lockedEvent.processed_at = getDate();
     }
 
-    logger?.debug(
-      {
-        eventId: lockedEvent.id,
-        type: lockedEvent.type,
-        lockedEvent,
-        correlationId: lockedEvent.correlation_id,
-        errored,
-      },
-      "updating event",
-    );
-
     await txClient.updateEvent(lockedEvent);
   });
 };
@@ -369,6 +360,7 @@ export class EventProcessor<TxOBEventType extends string> {
   private handlerMap: TxOBEventHandlerMap<TxOBEventType>;
   private opts: Omit<TxOBProcessEventsOpts<TxOBEventType>, "signal"> & {
     pollingIntervalMs: number;
+    maxQueuedEvents: number;
   };
   private abortController: AbortController;
   private queue: PQueue;
@@ -390,6 +382,7 @@ export class EventProcessor<TxOBEventType extends string> {
       backoff: defaultBackoff,
       maxEventConcurrency: defaultMaxEventConcurrency,
       maxHandlerConcurrency: defaultMaxHandlerConcurrency,
+      maxQueuedEvents: defaultMaxQueuedEvents,
       ...opts,
     };
     this.client = client;
@@ -415,6 +408,19 @@ export class EventProcessor<TxOBEventType extends string> {
       try {
         do {
           try {
+            // Skip polling if we're at capacity to prevent memory leaks
+            if (queuedEventIds.size >= this.opts.maxQueuedEvents) {
+              this.opts.logger?.debug(
+                {
+                  queuedCount: queuedEventIds.size,
+                  maxQueuedEvents: this.opts.maxQueuedEvents,
+                },
+                "skipping poll - queue at capacity",
+              );
+              await sleep(this.opts.pollingIntervalMs);
+              continue;
+            }
+
             const events = await this.client.getEventsToProcess({
               ...this.opts,
               signal: this.abortController.signal,

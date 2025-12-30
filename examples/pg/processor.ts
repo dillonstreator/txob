@@ -41,7 +41,7 @@ let processor: EventProcessor<EventType> | undefined = undefined;
           return;
         },
         thing3: async (event) => {
-          await sleep(20_000);
+          await sleep(Math.random() * 10_000);
           console.log(`${event.id} thing3 ${event.correlation_id}`);
           if (Math.random() > 0.75) throw new Error("some issue");
 
