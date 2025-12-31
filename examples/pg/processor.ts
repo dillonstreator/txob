@@ -28,13 +28,14 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
   await client.connect();
   await migrate(client);
 
-  wakeupEmitter = await createWakeupEmitter(clientConfig, {
+  wakeupEmitter = await createWakeupEmitter({
+    listenClientConfig: clientConfig,
     createTrigger: true,
     querier: client,
   });
 
   processor = new EventProcessor<EventType>({
-    client: createProcessorClient<EventType>(client),
+    client: createProcessorClient<EventType>({ querier: client }),
     wakeupEmitter,
     handlerMap: {
       ResourceSaved: {

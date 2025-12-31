@@ -129,7 +129,7 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     // Handlers are processed concurrently and independently with retries
     // If one handler fails, others continue processing
@@ -191,7 +191,8 @@ For better performance, you can set up wakeup signals to reduce polling frequenc
 // PostgreSQL: Use Postgres NOTIFY
 import { createWakeupEmitter } from "txob/pg";
 
-const wakeupEmitter = await createWakeupEmitter(clientConfig, {
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
   createTrigger: true,
   querier: client,
 });
@@ -199,7 +200,10 @@ const wakeupEmitter = await createWakeupEmitter(clientConfig, {
 // MongoDB: Use Change Streams
 import { createWakeupEmitter } from "txob/mongodb";
 
-const wakeupEmitter = await createWakeupEmitter(mongoClient, "myapp");
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
+});
 
 // Use with EventProcessor
 const processor = new EventProcessor({
@@ -492,11 +496,11 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processorClient = createProcessorClient(
-  client,
-  "events", // Optional: table name (default: "events")
-  100, // Optional: max events per poll (default: 100)
-);
+const processorClient = createProcessorClient({
+  querier: client,
+  table: "events", // Optional: table name (default: "events")
+  limit: 100, // Optional: max events per poll (default: 100)
+});
 ```
 
 **4. (Optional) Set up wakeup signals to reduce polling:**
@@ -506,7 +510,8 @@ import { createWakeupEmitter } from "txob/pg";
 
 // Create a wakeup emitter using Postgres NOTIFY
 // This will automatically create a trigger that sends NOTIFY on INSERT
-const wakeupEmitter = await createWakeupEmitter(clientConfig, {
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
   createTrigger: true,
   querier: client,
   table: "events", // Optional: table name (default: "events")
@@ -552,12 +557,12 @@ await eventsCollection.createIndex({ correlation_id: 1 });
 ```typescript
 import { createProcessorClient } from "txob/mongodb";
 
-const processorClient = createProcessorClient(
-  mongoClient,
-  "myapp", // Database name
-  "events", // Optional: collection name (default: "events")
-  100, // Optional: max events per poll (default: 100)
-);
+const processorClient = createProcessorClient({
+  mongo: mongoClient,
+  db: "myapp", // Database name
+  collection: "events", // Optional: collection name (default: "events")
+  limit: 100, // Optional: max events per poll (default: 100)
+});
 ```
 
 **3. (Optional) Set up wakeup signals to reduce polling:**
@@ -567,7 +572,9 @@ import { createWakeupEmitter } from "txob/mongodb";
 
 // Create a wakeup emitter using MongoDB Change Streams
 // Note: Requires a replica set or sharded cluster
-const wakeupEmitter = await createWakeupEmitter(mongoClient, "myapp", {
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
   collection: "events", // Optional: collection name (default: "events")
 });
 
@@ -712,7 +719,7 @@ await client.connect();
 
 // 3. Create and start the processor
 const processor = EventProcessor(
-  createProcessorClient<EventType>(client),
+  createProcessorClient<EventType>({ querier: client }),
   {
     UserCreated: {
       sendEmail: async (event, { signal }) => {
@@ -833,7 +840,7 @@ gracefulShutdown(server, {
 ### Multiple Event Types
 
 ```typescript
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     sendWelcomeEmail: async (event) => {
       /* ... */
@@ -926,7 +933,7 @@ const kafka = new Kafka({ brokers: ["localhost:9092"] });
 const producer = kafka.producer();
 await producer.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     // Publish to Kafka with guaranteed consistency
     publishToKafka: async (event) => {
@@ -980,7 +987,7 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   // All your handlers...
 });
 
@@ -1050,11 +1057,11 @@ Creates a PostgreSQL processor client.
 ```typescript
 import { createProcessorClient } from "txob/pg";
 
-createProcessorClient<EventType>(
-  client: pg.Client,
-  tableName?: string,    // Default: "events"
-  limit?: number         // Default: 100
-): TxOBProcessorClient<EventType>
+createProcessorClient<EventType>(opts: {
+  querier: pg.Client;
+  table?: string;    // Default: "events"
+  limit?: number;   // Default: 100
+}): TxOBProcessorClient<EventType>
 ```
 
 ### `createProcessorClient` (MongoDB)
@@ -1064,12 +1071,12 @@ Creates a MongoDB processor client.
 ```typescript
 import { createProcessorClient } from "txob/mongodb";
 
-createProcessorClient<EventType>(
-  mongo: mongodb.MongoClient,
-  db: string,               // Database name
-  collectionName?: string,   // Default: "events"
-  limit?: number            // Default: 100
-): TxOBProcessorClient<EventType>
+createProcessorClient<EventType>(opts: {
+  mongo: mongodb.MongoClient;
+  db: string;               // Database name
+  collection?: string;      // Default: "events"
+  limit?: number;           // Default: 100
+}): TxOBProcessorClient<EventType>
 ```
 
 ### `TxOBError`
@@ -1110,7 +1117,8 @@ Creates a Postgres NOTIFY-based wakeup emitter to reduce polling frequency.
 ```typescript
 import { createWakeupEmitter } from "txob/pg";
 
-const wakeupEmitter = await createWakeupEmitter(clientConfig, {
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
   createTrigger: true, // Automatically create database trigger
   querier: client, // Required if createTrigger is true
   table: "events", // Optional: table name (default: "events")
@@ -1127,7 +1135,9 @@ Creates a MongoDB Change Stream-based wakeup emitter to reduce polling frequency
 ```typescript
 import { createWakeupEmitter } from "txob/mongodb";
 
-const wakeupEmitter = await createWakeupEmitter(mongoClient, "myapp", {
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
   collection: "events", // Optional: collection name (default: "events")
 });
 ```
@@ -1299,7 +1309,7 @@ If using `FOR UPDATE SKIP LOCKED` properly (which txob does), stuck events are n
 - Lower `maxEventConcurrency`
 - Profile handlers for memory leaks
 - Archive old events
-- Reduce `limit` in `createProcessorClient(client, table, limit)`
+- Reduce `limit` in `createProcessorClient({ querier: client, table, limit })`
 
 ### Duplicate handler executions
 
@@ -1578,7 +1588,7 @@ type EventType = keyof typeof eventTypes;
 
 // TypeScript will enforce all event types have handlers
 const processor = EventProcessor<EventType>(
-  createProcessorClient<EventType>(client),
+  createProcessorClient<EventType>({ querier: client }),
   {
     UserCreated: {
       /* handlers */

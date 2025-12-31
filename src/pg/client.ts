@@ -22,18 +22,17 @@ interface Querier {
 // to cancel queries if/when supported by `pg` https://github.com/brianc/node-postgres/issues/2774
 
 export type CreateProcessorClientOpts<EventType extends string> = {
+  querier: Querier;
   table?: string;
   limit?: number;
 };
 
 export const createProcessorClient = <EventType extends string>(
-  querier: Querier,
-  table: string = "events",
-  limit: number = 100,
-  clientOpts?: CreateProcessorClientOpts<EventType>,
+  opts: CreateProcessorClientOpts<EventType>,
 ): TxOBProcessorClient<EventType> => {
-  const _table = clientOpts?.table ?? table;
-  const _limit = clientOpts?.limit ?? limit;
+  const { querier, table = "events", limit = 100 } = opts;
+  const _table = table;
+  const _limit = limit;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
   ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
@@ -126,12 +125,14 @@ export const createProcessorClient = <EventType extends string>(
 
 type CreateWakeupEmitterOpts =
   | {
+      listenClientConfig: ClientConfig;
       channel?: string;
       createTrigger: true;
       table?: string;
       querier: Querier;
     }
   | {
+      listenClientConfig: ClientConfig;
       channel?: string;
       createTrigger?: false;
       table?: string;
@@ -143,16 +144,13 @@ type CreateWakeupEmitterOpts =
  * This uses a separate connection for LISTEN, as you cannot LISTEN on a connection
  * that's used for queries.
  *
- * @param listenClientConfig - Configuration for the LISTEN connection (can be same as main client)
  * @param opts - Options for the wakeup emitter. If `createTrigger` is `true`, `querier` is required.
  * @returns A WakeupEmitter that emits 'wakeup' events when Postgres NOTIFY is received
  */
 export const createWakeupEmitter = async (
-  listenClientConfig: ClientConfig,
-  opts?: CreateWakeupEmitterOpts,
+  opts: CreateWakeupEmitterOpts,
 ): Promise<WakeupEmitter> => {
-  const channel = opts?.channel ?? "txob_events";
-  const table = opts?.table ?? "events";
+  const { listenClientConfig, channel = "txob_events", table = "events" } = opts;
   const emitter = new EventEmitter();
 
   // Create a separate client for LISTEN
@@ -183,8 +181,8 @@ export const createWakeupEmitter = async (
   });
 
   // Create trigger if requested
-  if (opts?.createTrigger && opts?.querier) {
-    await createWakeupTrigger(opts.querier, table, listenChannel);
+  if (opts.createTrigger && opts.querier) {
+    await createWakeupTrigger({ querier: opts.querier, table, channel: listenChannel });
   }
 
   // Return a WakeupEmitter that wraps the EventEmitter
@@ -205,6 +203,12 @@ export const createWakeupEmitter = async (
   } as WakeupEmitter & { close: () => Promise<void> };
 };
 
+type CreateWakeupTriggerOpts = {
+  querier: Querier;
+  table?: string;
+  channel?: string;
+};
+
 /**
  * Creates a Postgres trigger that sends NOTIFY when events are inserted.
  * Wakeup signals are primarily for new events - retries after backoff are handled
@@ -214,15 +218,13 @@ export const createWakeupEmitter = async (
  * simultaneously without errors. It gracefully handles cases where the trigger
  * already exists by catching and ignoring duplicate object errors.
  *
- * @param querier - Database querier to execute the trigger creation
- * @param table - Events table name
- * @param channel - NOTIFY channel name
+ * @param opts - Options for the wakeup trigger
+ * @returns Promise that resolves when the trigger is created
  */
 export const createWakeupTrigger = async (
-  querier: Querier,
-  table: string = "events",
-  channel: string = "txob_events",
+  opts: CreateWakeupTriggerOpts,
 ): Promise<void> => {
+  const { querier, table = "events", channel = "txob_events" } = opts;
   const triggerName = `txob_wakeup_trigger_${table}`;
   const functionName = `txob_wakeup_notify_${table}`;
 

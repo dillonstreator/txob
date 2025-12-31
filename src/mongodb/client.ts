@@ -22,12 +22,17 @@ const createReadyToProcessFilter = (maxErrors: number) => ({
   errors: { $lt: maxErrors },
 });
 
+export type CreateProcessorClientOpts<EventType extends string> = {
+  mongo: MongoClient;
+  db: string;
+  collection?: string;
+  limit?: number;
+};
+
 export const createProcessorClient = <EventType extends string>(
-  mongo: MongoClient,
-  db: string,
-  collection: string = "events",
-  limit: number = 100,
+  opts: CreateProcessorClientOpts<EventType>,
 ): TxOBProcessorClient<EventType> => {
+  const { mongo, db, collection = "events", limit = 100 } = opts;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
   ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
@@ -146,6 +151,8 @@ export const createProcessorClient = <EventType extends string>(
 };
 
 type CreateWakeupEmitterOpts = {
+  mongo: MongoClient;
+  db: string;
   collection?: string;
 };
 
@@ -163,19 +170,15 @@ type CreateWakeupEmitterOpts = {
  *
  * See: https://www.mongodb.com/docs/manual/changeStreams/
  *
- * @param mongo - MongoDB client instance
- * @param db - Database name
  * @param opts - Options for the wakeup emitter
  * @returns A WakeupEmitter that emits 'wakeup' events when new events are inserted.
  *          Errors (including replica set requirement failures) are emitted via the 'error' event.
  * @throws Does not throw synchronously. Errors are emitted via the 'error' event.
  */
 export const createWakeupEmitter = async (
-  mongo: MongoClient,
-  db: string,
-  opts?: CreateWakeupEmitterOpts,
+  opts: CreateWakeupEmitterOpts,
 ): Promise<WakeupEmitter & { close: () => Promise<void> }> => {
-  const collection = opts?.collection ?? "events";
+  const { mongo, db, collection = "events" } = opts;
   const emitter = new EventEmitter();
 
   // Get the collection to watch
