@@ -126,7 +126,7 @@ const defaultMaxEventConcurrency = 20;
 const defaultMaxHandlerConcurrency = 10;
 const defaultMaxQueuedEvents = 500;
 const defaultWakeupTimeoutMs = 30_000; // 30 second timeout before fallback polling
-const defaultWakeupThrottleMs = 2_500; // 2.5s throttle for wakeup signals to prevent excessive polling
+const defaultWakeupThrottleMs = 1_000; // 1s throttle for wakeup signals to prevent excessive polling
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
