@@ -209,11 +209,14 @@ const wakeupEmitter = await createWakeupEmitter({
 const processor = new EventProcessor({
   client: processorClient,
   wakeupEmitter, // Polls immediately when new events arrive
-  handlerMap: { /* ... */ },
+  handlerMap: {
+    /* ... */
+  },
 });
 ```
 
 When a wakeup emitter is provided, the processor will:
+
 - Poll immediately when new events are inserted (via wakeup signal)
 - Still poll periodically as a fallback if wakeup signals are missed
 - Throttle wakeup signals to prevent excessive polling during bursts
@@ -237,13 +240,38 @@ When a wakeup emitter is provided, the processor will:
 │  [id] [type] [data] [processed_at] [errors] [backoff_until]    │
 └─────────────────────────────────────────────────────────────────┘
                            │
-                           │ Polls every few seconds
+        ┌──────────────────┴──────────────────┐
+        │                                      │
+        │ (Optional) Wakeup Signal            │
+        │ (Postgres NOTIFY / MongoDB Stream) │
+        │                                      │
+        ▼                                      ▼
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│      Polling Component       │   │   Fallback Polling Loop      │
+│  (Decoupled from Processing) │   │   (If wakeup signals missed)│
+├──────────────────────────────┤   ├──────────────────────────────┤
+│  • Listens for wakeup signals│   │  • Polls periodically        │
+│  • Throttles rapid signals   │   │  • Only if no recent wakeup  │
+│  • Triggers immediate poll    │   │  • Uses same throttled poll  │
+└──────────────────────────────┘   └──────────────────────────────┘
+        │                                      │
+        └──────────────────┬──────────────────┘
+                           │
+                           │ SELECT unprocessed events
+                           │ (FOR UPDATE SKIP LOCKED)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Event Processor (txob)                         │
+│                    Processing Queue                             │
+│  (Concurrency-controlled event queue)                           │
+└─────────────────────────────────────────────────────────────────┘
+                           │
+                           │ Process events concurrently
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Event Processor                                │
 ├─────────────────────────────────────────────────────────────────┤
-│  1. SELECT unprocessed events (FOR UPDATE SKIP LOCKED)          │
-│  2. Execute handlers (send email, webhook, etc.)                │
+│  1. Lock event in transaction                                   │
+│  2. Execute handlers concurrently (send email, webhook, etc.)  │
 │  3. UPDATE event with results and processed_at                  │
 │  4. On failure: increment errors, set backoff_until             │
 └─────────────────────────────────────────────────────────────────┘
@@ -256,6 +284,12 @@ When a wakeup emitter is provided, the processor will:
 - The processor runs independently and guarantees **at-least-once delivery**
 - Multiple processors can run concurrently using database row locking
 - Failed events are retried with exponential backoff
+- Polling and processing are **decoupled** - polling finds events, processing queue handles execution
+- **Wakeup signals** (Postgres NOTIFY or MongoDB Change Streams) reduce polling latency
+- **Throttled polling** prevents excessive database queries during event bursts
+- **Fallback polling** ensures events are processed even if wakeup signals are missed
+
+For a detailed architecture diagram, see [architecture.mmd](./architecture.mmd).
 
 ## Core Concepts
 
@@ -522,7 +556,9 @@ const wakeupEmitter = await createWakeupEmitter({
 const processor = new EventProcessor({
   client: processorClient,
   wakeupEmitter, // Reduces polling frequency when new events arrive
-  handlerMap: { /* ... */ },
+  handlerMap: {
+    /* ... */
+  },
   pollingIntervalMs: 5000, // Still used as fallback if wakeup signals are missed
   wakeupTimeoutMs: 60000, // Fallback poll if no wakeup signal received in 60s
   wakeupThrottleMs: 1000, // Throttle wakeup signals to prevent excessive polling
@@ -582,7 +618,9 @@ const wakeupEmitter = await createWakeupEmitter({
 const processor = new EventProcessor({
   client: processorClient,
   wakeupEmitter, // Reduces polling frequency when new events arrive
-  handlerMap: { /* ... */ },
+  handlerMap: {
+    /* ... */
+  },
   pollingIntervalMs: 5000, // Still used as fallback if wakeup signals are missed
   wakeupTimeoutMs: 60000, // Fallback poll if no wakeup signal received in 60s
   wakeupThrottleMs: 100, // Throttle wakeup signals to prevent excessive polling
@@ -595,7 +633,8 @@ wakeupEmitter.on("error", (err) => {
 });
 ```
 
-**Note:** 
+**Note:**
+
 - MongoDB transactions require a replica set or sharded cluster. [See MongoDB docs](https://www.mongodb.com/docs/manual/core/transactions/).
 - MongoDB Change Streams (used for wakeup signals) also require a replica set or sharded cluster. If your MongoDB instance is a standalone server, you must convert it to a single-node replica set by running `rs.initiate()` in the mongo shell.
 
@@ -674,18 +713,18 @@ EventProcessor(client, handlerMap, {
 
 ### Configuration Reference
 
-| Option                    | Type                      | Default     | Description                                 |
-| ------------------------- | ------------------------- | ----------- | ------------------------------------------- |
-| `pollingIntervalMs`       | `number`                  | `5000`      | Milliseconds between polling cycles (used when no wakeup emitter or as fallback) |
-| `maxErrors`               | `number`                  | `5`         | Max retry attempts before marking as failed |
-| `backoff`                 | `(count: number) => Date` | Exponential | Calculate next retry time                   |
-| `maxEventConcurrency`     | `number`                  | `5`         | Max events processed simultaneously         |
-| `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently |
-| `wakeupEmitter`           | `WakeupEmitter`           | `undefined` | Optional wakeup signal emitter (Postgres NOTIFY or MongoDB Change Streams) |
-| `wakeupTimeoutMs`         | `number`                  | `30000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter) |
-| `wakeupThrottleMs`        | `number`                  | `1000`       | Throttle wakeup signals to prevent excessive polling (only used with wakeupEmitter) |
-| `logger`                  | `Logger`                  | `undefined` | Custom logger interface                     |
-| `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                         |
+| Option                    | Type                      | Default     | Description                                                                         |
+| ------------------------- | ------------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `pollingIntervalMs`       | `number`                  | `5000`      | Milliseconds between polling cycles (used when no wakeup emitter or as fallback)    |
+| `maxErrors`               | `number`                  | `5`         | Max retry attempts before marking as failed                                         |
+| `backoff`                 | `(count: number) => Date` | Exponential | Calculate next retry time                                                           |
+| `maxEventConcurrency`     | `number`                  | `5`         | Max events processed simultaneously                                                 |
+| `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently                                         |
+| `wakeupEmitter`           | `WakeupEmitter`           | `undefined` | Optional wakeup signal emitter (Postgres NOTIFY or MongoDB Change Streams)          |
+| `wakeupTimeoutMs`         | `number`                  | `30000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter)           |
+| `wakeupThrottleMs`        | `number`                  | `1000`      | Throttle wakeup signals to prevent excessive polling (only used with wakeupEmitter) |
+| `logger`                  | `Logger`                  | `undefined` | Custom logger interface                                                             |
+| `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                                                                 |
 
 ## Usage Examples
 

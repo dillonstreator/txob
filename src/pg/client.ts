@@ -150,7 +150,11 @@ type CreateWakeupEmitterOpts =
 export const createWakeupEmitter = async (
   opts: CreateWakeupEmitterOpts,
 ): Promise<WakeupEmitter> => {
-  const { listenClientConfig, channel = "txob_events", table = "events" } = opts;
+  const {
+    listenClientConfig,
+    channel = "txob_events",
+    table = "events",
+  } = opts;
   const emitter = new EventEmitter();
 
   // Create a separate client for LISTEN
@@ -182,7 +186,11 @@ export const createWakeupEmitter = async (
 
   // Create trigger if requested
   if (opts.createTrigger && opts.querier) {
-    await createWakeupTrigger({ querier: opts.querier, table, channel: listenChannel });
+    await createWakeupTrigger({
+      querier: opts.querier,
+      table,
+      channel: listenChannel,
+    });
   }
 
   // Return a WakeupEmitter that wraps the EventEmitter
