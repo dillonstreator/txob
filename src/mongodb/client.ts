@@ -1,9 +1,11 @@
-import { MongoClient, ObjectId } from "mongodb";
+import { EventEmitter } from "node:events";
+import { MongoClient, ObjectId, type ChangeStream } from "mongodb";
 import type {
   TxOBEvent,
   TxOBProcessorClient,
   TxOBProcessorClientOpts,
   TxOBTransactionProcessorClient,
+  WakeupEmitter,
 } from "../processor.js";
 import { getDate } from "../date.js";
 
@@ -20,12 +22,17 @@ const createReadyToProcessFilter = (maxErrors: number) => ({
   errors: { $lt: maxErrors },
 });
 
+export type CreateProcessorClientOpts<EventType extends string> = {
+  mongo: MongoClient;
+  db: string;
+  collection?: string;
+  limit?: number;
+};
+
 export const createProcessorClient = <EventType extends string>(
-  mongo: MongoClient,
-  db: string,
-  collection: string = "events",
-  limit: number = 100,
+  opts: CreateProcessorClientOpts<EventType>,
 ): TxOBProcessorClient<EventType> => {
+  const { mongo, db, collection = "events", limit = 100 } = opts;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
   ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
@@ -140,5 +147,89 @@ export const createProcessorClient = <EventType extends string>(
   return {
     getEventsToProcess,
     transaction,
+  };
+};
+
+type CreateWakeupEmitterOpts = {
+  mongo: MongoClient;
+  db: string;
+  collection?: string;
+};
+
+/**
+ * Creates a MongoDB Change Stream-based wakeup emitter for reducing polling frequency.
+ * This watches for INSERT operations on the events collection and emits wakeup signals.
+ *
+ * **Important**: MongoDB Change Streams require a replica set or sharded cluster.
+ * If your MongoDB instance is a standalone server, you must convert it to a single-node
+ * replica set by running `rs.initiate()` in the mongo shell.
+ *
+ * If the database is not configured for Change Streams, an error will be emitted via
+ * the 'error' event on the returned WakeupEmitter. The error typically occurs when
+ * the change stream attempts to connect.
+ *
+ * See: https://www.mongodb.com/docs/manual/changeStreams/
+ *
+ * @param opts - Options for the wakeup emitter
+ * @returns A WakeupEmitter that emits 'wakeup' events when new events are inserted.
+ *          Errors (including replica set requirement failures) are emitted via the 'error' event.
+ * @throws Does not throw synchronously. Errors are emitted via the 'error' event.
+ */
+export const createWakeupEmitter = async (
+  opts: CreateWakeupEmitterOpts,
+): Promise<WakeupEmitter & { close: () => Promise<void> }> => {
+  const { mongo, db, collection = "events" } = opts;
+  const emitter = new EventEmitter();
+
+  // Get the collection to watch
+  const eventsCollection = mongo.db(db).collection(collection);
+
+  // Create a change stream that watches for insert operations
+  // We only care about inserts - retries after backoff are handled by fallback polling
+  // Note: watch() may not error immediately - errors typically occur when the change
+  // stream attempts to connect, which happens asynchronously
+  const changeStream: ChangeStream = eventsCollection.watch(
+    [
+      {
+        $match: {
+          operationType: "insert",
+        },
+      },
+    ],
+    {
+      fullDocument: "default",
+    },
+  );
+
+  // Handle change stream events
+  changeStream.on("change", () => {
+    emitter.emit("wakeup");
+  });
+
+  // Handle change stream errors
+  // Common errors include:
+  // - "Change streams are only supported on replica sets" (standalone MongoDB)
+  // - Connection errors
+  // - Permission errors
+  changeStream.on("error", (err) => {
+    emitter.emit("error", err);
+  });
+
+  // Handle change stream close
+  changeStream.on("close", () => {
+    emitter.emit("error", new Error("MongoDB Change Stream closed"));
+  });
+
+  // Return a WakeupEmitter that wraps the EventEmitter
+  return {
+    on: (event: "wakeup", listener: () => void) => {
+      emitter.on(event, listener);
+    },
+    off: (event: "wakeup", listener: () => void) => {
+      emitter.off(event, listener);
+    },
+    close: async () => {
+      await changeStream.close();
+    },
   };
 };

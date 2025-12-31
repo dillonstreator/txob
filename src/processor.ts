@@ -4,6 +4,46 @@ import pLimit from "p-limit";
 import { deepClone } from "./clone.js";
 import PQueue from "p-queue";
 import { ErrorUnprocessableEventHandler, TxOBError } from "./error.js";
+import { throttle } from "throttle-debounce";
+
+// Helper function to sleep with abort signal support for faster cleanup
+const sleepWithAbort = (ms: number, signal?: AbortSignal): Promise<void> => {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+  if (!signal) {
+    return sleep(ms);
+  }
+
+  let abortHandler: (() => void) | null = null;
+
+  const cleanup = () => {
+    if (abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+      abortHandler = null;
+    }
+  };
+
+  return Promise.race([
+    sleep(ms).finally(() => {
+      // Always clean up listener when sleep completes (normally or if aborted)
+      cleanup();
+    }),
+    new Promise<void>((resolve) => {
+      abortHandler = () => {
+        cleanup();
+        resolve();
+      };
+      // Check again after setting up listener in case abort happened between checks
+      if (signal.aborted) {
+        cleanup();
+        resolve();
+        return;
+      }
+      signal.addEventListener("abort", abortHandler);
+    }),
+  ]);
+};
 
 type TxOBEventHandlerResult = {
   processed_at?: Date;
@@ -44,6 +84,12 @@ export type TxOBProcessorClientOpts = {
   maxErrors: number;
 };
 
+export interface WakeupEmitter {
+  on(event: "wakeup", listener: () => void): void;
+  off(event: "wakeup", listener: () => void): void;
+  close(): Promise<void>;
+}
+
 export interface TxOBProcessorClient<TxOBEventType extends string> {
   getEventsToProcess(
     opts: TxOBProcessorClientOpts,
@@ -74,11 +120,13 @@ export const defaultBackoff = (errorCount: number): Date => {
 
   return retryTimestamp;
 };
-const defaultPollingIntervalMs = 5000;
+const defaultPollingIntervalMs = 5_000;
 const defaultMaxErrors = 5;
 const defaultMaxEventConcurrency = 20;
 const defaultMaxHandlerConcurrency = 10;
-const defaultMaxQueuedEvents = 100;
+const defaultMaxQueuedEvents = 500;
+const defaultWakeupTimeoutMs = 30_000; // 30 second timeout before fallback polling
+const defaultWakeupThrottleMs = 1_000; // 1s throttle for wakeup signals to prevent excessive polling
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
@@ -357,17 +405,28 @@ export class EventProcessor<TxOBEventType extends string> {
   private opts: Omit<TxOBProcessEventsOpts<TxOBEventType>, "signal"> & {
     pollingIntervalMs: number;
     maxQueuedEvents: number;
+    wakeupTimeoutMs: number;
+    wakeupThrottleMs: number;
   };
   private abortController: AbortController;
   private queue: PQueue;
   private state: "stopped" | "started" | "stopping" = "stopped";
+  private wakeupEmitter?: WakeupEmitter;
+  private wakeupListener?: () => void;
+  private throttledPoll?: ReturnType<typeof throttle>;
+  private lastWakeupTime: number = Date.now();
+  private isPolling: boolean = false;
 
   constructor({
     client,
     handlerMap,
+    wakeupEmitter,
     ...opts
   }: Omit<Partial<TxOBProcessEventsOpts<TxOBEventType>>, "signal"> & {
     pollingIntervalMs?: number;
+    wakeupTimeoutMs?: number;
+    wakeupThrottleMs?: number;
+    wakeupEmitter?: WakeupEmitter;
   } & {
     client: TxOBProcessorClient<TxOBEventType>;
     handlerMap: TxOBEventHandlerMap<TxOBEventType>;
@@ -379,10 +438,13 @@ export class EventProcessor<TxOBEventType extends string> {
       maxEventConcurrency: defaultMaxEventConcurrency,
       maxHandlerConcurrency: defaultMaxHandlerConcurrency,
       maxQueuedEvents: defaultMaxQueuedEvents,
+      wakeupTimeoutMs: defaultWakeupTimeoutMs,
+      wakeupThrottleMs: defaultWakeupThrottleMs,
       ...opts,
     };
     this.client = client;
     this.handlerMap = handlerMap;
+    this.wakeupEmitter = wakeupEmitter;
     this.opts = _opts;
     this.abortController = new AbortController();
     this.queue = new PQueue({
@@ -400,84 +462,182 @@ export class EventProcessor<TxOBEventType extends string> {
 
     const queuedEventIds: Set<string> = new Set();
 
-    (async () => {
+    // Poll function that can be called from wakeup signals or polling loop
+    const poll = async (): Promise<void> => {
+      if (this.abortController.signal.aborted) {
+        return;
+      }
+
+      // Prevent concurrent polls
+      if (this.isPolling) {
+        this.opts.logger?.debug("skipping poll - already polling");
+        return;
+      }
+
+      this.isPolling = true;
       try {
-        do {
-          try {
-            // Skip polling if we're at capacity to prevent memory leaks
-            if (queuedEventIds.size >= this.opts.maxQueuedEvents) {
+        // Skip polling if we're at capacity to prevent memory leaks
+        if (queuedEventIds.size >= this.opts.maxQueuedEvents) {
+          this.opts.logger?.debug(
+            {
+              queuedCount: queuedEventIds.size,
+              maxQueuedEvents: this.opts.maxQueuedEvents,
+            },
+            "skipping poll - queue at capacity",
+          );
+          return;
+        }
+
+        const events = await this.client.getEventsToProcess({
+          ...this.opts,
+          signal: this.abortController.signal,
+        });
+
+        const unqueuedEvents = events.filter(
+          (event) => !queuedEventIds.has(event.id),
+        );
+        this.opts.logger?.debug(
+          `found ${unqueuedEvents.length} events to process`,
+        );
+
+        for (const event of unqueuedEvents) {
+          queuedEventIds.add(event.id);
+          this.queue
+            .add(
+              async () => {
+                try {
+                  await processEvent<TxOBEventType>({
+                    client: this.client,
+                    handlerMap: this.handlerMap,
+                    unlockedEvent: event,
+                    opts: {
+                      ...this.opts,
+                      signal: this.abortController.signal,
+                    },
+                  });
+                } catch (error) {
+                  this.opts.logger?.error(
+                    {
+                      eventId: event.id,
+                      error,
+                    },
+                    "error processing event",
+                  );
+                } finally {
+                  queuedEventIds.delete(event.id);
+                }
+              },
+              { signal: this.abortController.signal },
+            )
+            .catch((error) => {
+              // Handle queue.add() rejections (e.g., when aborted)
+              // The event processing error is already logged in the task's catch block
+              queuedEventIds.delete(event.id);
+            });
+        }
+      } catch (error) {
+        this.opts.logger?.error(
+          { error },
+          "error polling for events, will retry",
+        );
+        // Continue polling even on error
+      } finally {
+        this.isPolling = false;
+      }
+    };
+
+    if (this.wakeupEmitter) {
+      // Setup wakeup signal listener with combined leading and trailing edge throttle
+      // Using throttle-debounce library for robust throttling behavior
+      // Leading edge: Poll immediately on the first signal
+      // Trailing edge: If signals keep coming, also poll after a delay from the last signal
+      // This provides both low latency (leading edge) and ensures we catch events
+      // even if signals arrive in a continuous burst (trailing edge)
+      const throttleMs = this.opts.wakeupThrottleMs;
+
+      // Create throttled poll function with both leading and trailing edges
+      // noLeading: false (default) = execute immediately on first signal (leading edge)
+      // noTrailing: false (default) = also execute after delay from last signal (trailing edge)
+      // This throttled poll is used by both wakeup signals and fallback polling to prevent conflicts
+      this.throttledPoll = throttle(throttleMs, () => {
+        if (this.abortController.signal.aborted) {
+          return;
+        }
+        this.lastWakeupTime = Date.now();
+        this.opts.logger?.debug("triggering throttled poll");
+        void poll();
+      });
+
+      this.wakeupListener = () => {
+        if (this.abortController.signal.aborted) {
+          return;
+        }
+        this.opts.logger?.debug("received wakeup signal");
+        this.throttledPoll?.();
+      };
+
+      this.wakeupEmitter.on("wakeup", this.wakeupListener);
+      this.opts.logger?.debug("wakeup signal listener registered");
+
+      // Initial poll
+      void poll();
+
+      // Start fallback polling loop
+      // This runs at a lower frequency and only polls if we haven't received a wakeup signal recently
+      // Uses the same throttled poll function to prevent conflicts with wakeup-triggered polls
+      (async () => {
+        try {
+          do {
+            await sleepWithAbort(
+              this.opts.pollingIntervalMs,
+              this.abortController.signal,
+            );
+
+            if (this.abortController.signal.aborted) {
+              break;
+            }
+
+            // Check if we've received a wakeup signal recently
+            const timeSinceLastWakeup = Date.now() - this.lastWakeupTime;
+            if (timeSinceLastWakeup >= this.opts.wakeupTimeoutMs) {
               this.opts.logger?.debug(
                 {
-                  queuedCount: queuedEventIds.size,
-                  maxQueuedEvents: this.opts.maxQueuedEvents,
+                  timeSinceLastWakeup,
+                  wakeupTimeoutMs: this.opts.wakeupTimeoutMs,
                 },
-                "skipping poll - queue at capacity",
+                "fallback poll triggered - no wakeup signal received",
               );
-              await sleep(this.opts.pollingIntervalMs);
-              continue;
+              this.throttledPoll?.();
+            } else {
+              this.opts.logger?.debug(
+                {
+                  timeSinceLastWakeup,
+                  wakeupTimeoutMs: this.opts.wakeupTimeoutMs,
+                },
+                "skipping fallback poll - wakeup signal received recently",
+              );
             }
-
-            const events = await this.client.getEventsToProcess({
-              ...this.opts,
-              signal: this.abortController.signal,
-            });
-
-            const unqueuedEvents = events.filter(
-              (event) => !queuedEventIds.has(event.id),
+          } while (!this.abortController.signal.aborted);
+        } catch (error) {
+          this.opts.logger?.error({ error }, "fallback polling loop error");
+        }
+      })();
+    } else {
+      // Standard polling loop
+      (async () => {
+        try {
+          do {
+            await poll();
+            await sleepWithAbort(
+              this.opts.pollingIntervalMs,
+              this.abortController.signal,
             );
-            this.opts.logger?.debug(
-              `found ${unqueuedEvents.length} events to process`,
-            );
-
-            for (const event of unqueuedEvents) {
-              queuedEventIds.add(event.id);
-              this.queue
-                .add(
-                  async () => {
-                    try {
-                      await processEvent<TxOBEventType>({
-                        client: this.client,
-                        handlerMap: this.handlerMap,
-                        unlockedEvent: event,
-                        opts: {
-                          ...this.opts,
-                          signal: this.abortController.signal,
-                        },
-                      });
-                    } catch (error) {
-                      this.opts.logger?.error(
-                        {
-                          eventId: event.id,
-                          error,
-                        },
-                        "error processing event",
-                      );
-                    } finally {
-                      queuedEventIds.delete(event.id);
-                    }
-                  },
-                  { signal: this.abortController.signal },
-                )
-                .catch((error) => {
-                  // Handle queue.add() rejections (e.g., when aborted)
-                  // The event processing error is already logged in the task's catch block
-                  queuedEventIds.delete(event.id);
-                });
-            }
-          } catch (error) {
-            this.opts.logger?.error(
-              { error },
-              "error polling for events, will retry",
-            );
-            // Continue polling even on error
-          }
-
-          await sleep(this.opts.pollingIntervalMs);
-        } while (!this.abortController.signal.aborted);
-      } catch (error) {
-        this.opts.logger?.error({ error }, "polling loop error");
-      }
-    })();
+          } while (!this.abortController.signal.aborted);
+        } catch (error) {
+          this.opts.logger?.error({ error }, "polling loop error");
+        }
+      })();
+    }
   }
 
   async stop(opts?: { timeoutMs?: number }): Promise<void> {
@@ -492,6 +652,18 @@ export class EventProcessor<TxOBEventType extends string> {
       timeoutMs: 10000,
       ...opts,
     };
+
+    // Clean up wakeup listener
+    if (this.wakeupListener && this.wakeupEmitter) {
+      this.wakeupEmitter.off("wakeup", this.wakeupListener);
+      this.wakeupListener = undefined;
+    }
+
+    // Cancel throttled poll (cleans up any pending timers)
+    if (this.throttledPoll) {
+      (this.throttledPoll as { cancel?: () => void }).cancel?.();
+      this.throttledPoll = undefined;
+    }
 
     this.abortController.abort();
     this.queue.pause();

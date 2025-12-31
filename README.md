@@ -77,6 +77,7 @@ await db.query("COMMIT");
 - ✅ **Graceful shutdown** - Finish processing in-flight events before shutting down
 - ✅ **Horizontal scalability** - Run multiple processors without conflicts using row-level locking
 - ✅ **Database agnostic** - Built-in support for PostgreSQL and MongoDB, or implement your own
+- ✅ **Reduced polling frequency** - Optional wakeup signals (Postgres NOTIFY, MongoDB Change Streams) to reduce database load and reduce latency
 - ✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
 - ✅ **TypeScript-first** - Full type safety and autocompletion
 - ✅ **Handler result tracking** - Track the execution status of each handler independently
@@ -128,7 +129,7 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     // Handlers are processed concurrently and independently with retries
     // If one handler fails, others continue processing
@@ -182,6 +183,44 @@ await client.query("COMMIT");
 
 That's it! The processor will automatically poll for new events and execute your handlers.
 
+**Optional: Reduce polling with wakeup signals**
+
+For better performance, you can set up wakeup signals to reduce polling frequency:
+
+```typescript
+// PostgreSQL: Use Postgres NOTIFY
+import { createWakeupEmitter } from "txob/pg";
+
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
+  createTrigger: true,
+  querier: client,
+});
+
+// MongoDB: Use Change Streams
+import { createWakeupEmitter } from "txob/mongodb";
+
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
+});
+
+// Use with EventProcessor
+const processor = new EventProcessor({
+  client: processorClient,
+  wakeupEmitter, // Polls immediately when new events arrive
+  handlerMap: {
+    /* ... */
+  },
+});
+```
+
+When a wakeup emitter is provided, the processor will:
+
+- Poll immediately when new events are inserted (via wakeup signal)
+- Still poll periodically as a fallback if wakeup signals are missed
+- Throttle wakeup signals to prevent excessive polling during bursts
+
 ## How It Works
 
 ```
@@ -201,13 +240,38 @@ That's it! The processor will automatically poll for new events and execute your
 │  [id] [type] [data] [processed_at] [errors] [backoff_until]    │
 └─────────────────────────────────────────────────────────────────┘
                            │
-                           │ Polls every few seconds
+        ┌──────────────────┴──────────────────┐
+        │                                      │
+        │ (Optional) Wakeup Signal            │
+        │ (Postgres NOTIFY / MongoDB Stream) │
+        │                                      │
+        ▼                                      ▼
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│      Polling Component       │   │   Fallback Polling Loop      │
+│  (Decoupled from Processing) │   │   (If wakeup signals missed)│
+├──────────────────────────────┤   ├──────────────────────────────┤
+│  • Listens for wakeup signals│   │  • Polls periodically        │
+│  • Throttles rapid signals   │   │  • Only if no recent wakeup  │
+│  • Triggers immediate poll    │   │  • Uses same throttled poll  │
+└──────────────────────────────┘   └──────────────────────────────┘
+        │                                      │
+        └──────────────────┬──────────────────┘
+                           │
+                           │ SELECT unprocessed events
+                           │ (FOR UPDATE SKIP LOCKED)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Event Processor (txob)                         │
+│                    Processing Queue                             │
+│  (Concurrency-controlled event queue)                           │
+└─────────────────────────────────────────────────────────────────┘
+                           │
+                           │ Process events concurrently
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Event Processor                                │
 ├─────────────────────────────────────────────────────────────────┤
-│  1. SELECT unprocessed events (FOR UPDATE SKIP LOCKED)          │
-│  2. Execute handlers (send email, webhook, etc.)                │
+│  1. Lock event in transaction                                   │
+│  2. Execute handlers concurrently (send email, webhook, etc.)  │
 │  3. UPDATE event with results and processed_at                  │
 │  4. On failure: increment errors, set backoff_until             │
 └─────────────────────────────────────────────────────────────────┘
@@ -220,6 +284,12 @@ That's it! The processor will automatically poll for new events and execute your
 - The processor runs independently and guarantees **at-least-once delivery**
 - Multiple processors can run concurrently using database row locking
 - Failed events are retried with exponential backoff
+- Polling and processing are **decoupled** - polling finds events, processing queue handles execution
+- **Wakeup signals** (Postgres NOTIFY or MongoDB Change Streams) reduce polling latency
+- **Throttled polling** prevents excessive database queries during event bursts
+- **Fallback polling** ensures events are processed even if wakeup signals are missed
+
+For a detailed architecture diagram, see [architecture.mmd](./architecture.mmd).
 
 ## Core Concepts
 
@@ -333,7 +403,34 @@ EventProcessor(client, handlers, {
 });
 ```
 
-**2. Unprocessable Events**
+**2. Custom Backoff with TxOBError**
+
+You can throw `TxOBError` to specify a custom backoff time for retries:
+
+```typescript
+import { TxOBError } from "txob";
+
+UserCreated: {
+  sendEmail: async (event) => {
+    try {
+      await emailService.send(event.data.email);
+    } catch (err) {
+      if (err.code === "RATE_LIMIT_EXCEEDED") {
+        // Retry after 1 minute instead of using default backoff
+        throw new TxOBError("Rate limit exceeded", {
+          cause: err,
+          backoffUntil: new Date(Date.now() + 60000),
+        });
+      }
+      throw err; // Use default backoff for other errors
+    }
+  };
+}
+```
+
+**Note:** If multiple handlers throw `TxOBError` with different `backoffUntil` dates, the processor will use the latest (maximum) backoff time.
+
+**3. Unprocessable Events**
 
 Sometimes an event cannot be processed (e.g., invalid data). Mark it as unprocessable to stop retrying:
 
@@ -352,7 +449,7 @@ UserCreated: {
 }
 ```
 
-**3. Max Errors Hook**
+**4. Max Errors Hook**
 
 When an event reaches max errors, you can create a "dead letter" event:
 
@@ -433,11 +530,39 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processorClient = createProcessorClient(
-  client,
-  "events", // Optional: table name (default: "events")
-  100, // Optional: max events per poll (default: 100)
-);
+const processorClient = createProcessorClient({
+  querier: client,
+  table: "events", // Optional: table name (default: "events")
+  limit: 100, // Optional: max events per poll (default: 100)
+});
+```
+
+**4. (Optional) Set up wakeup signals to reduce polling:**
+
+```typescript
+import { createWakeupEmitter } from "txob/pg";
+
+// Create a wakeup emitter using Postgres NOTIFY
+// This will automatically create a trigger that sends NOTIFY on INSERT
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
+  createTrigger: true,
+  querier: client,
+  table: "events", // Optional: table name (default: "events")
+  channel: "txob_events", // Optional: NOTIFY channel (default: "txob_events")
+});
+
+// Use with EventProcessor
+const processor = new EventProcessor({
+  client: processorClient,
+  wakeupEmitter, // Reduces polling frequency when new events arrive
+  handlerMap: {
+    /* ... */
+  },
+  pollingIntervalMs: 5000, // Still used as fallback if wakeup signals are missed
+  wakeupTimeoutMs: 60000, // Fallback poll if no wakeup signal received in 60s
+  wakeupThrottleMs: 1000, // Throttle wakeup signals to prevent excessive polling
+});
 ```
 
 ### MongoDB
@@ -468,14 +593,50 @@ await eventsCollection.createIndex({ correlation_id: 1 });
 ```typescript
 import { createProcessorClient } from "txob/mongodb";
 
-const processorClient = createProcessorClient(
-  db,
-  "events", // Optional: collection name (default: "events")
-  100, // Optional: max events per poll (default: 100)
-);
+const processorClient = createProcessorClient({
+  mongo: mongoClient,
+  db: "myapp", // Database name
+  collection: "events", // Optional: collection name (default: "events")
+  limit: 100, // Optional: max events per poll (default: 100)
+});
 ```
 
-**Note:** MongoDB transactions require a replica set or sharded cluster. [See MongoDB docs](https://www.mongodb.com/docs/manual/core/transactions/).
+**3. (Optional) Set up wakeup signals to reduce polling:**
+
+```typescript
+import { createWakeupEmitter } from "txob/mongodb";
+
+// Create a wakeup emitter using MongoDB Change Streams
+// Note: Requires a replica set or sharded cluster
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
+  collection: "events", // Optional: collection name (default: "events")
+});
+
+// Use with EventProcessor
+const processor = new EventProcessor({
+  client: processorClient,
+  wakeupEmitter, // Reduces polling frequency when new events arrive
+  handlerMap: {
+    /* ... */
+  },
+  pollingIntervalMs: 5000, // Still used as fallback if wakeup signals are missed
+  wakeupTimeoutMs: 60000, // Fallback poll if no wakeup signal received in 60s
+  wakeupThrottleMs: 100, // Throttle wakeup signals to prevent excessive polling
+});
+
+// Handle wakeup emitter errors (e.g., if not configured for replica set)
+wakeupEmitter.on("error", (err) => {
+  console.error("Wakeup emitter error:", err);
+  // Processor will automatically fall back to polling
+});
+```
+
+**Note:**
+
+- MongoDB transactions require a replica set or sharded cluster. [See MongoDB docs](https://www.mongodb.com/docs/manual/core/transactions/).
+- MongoDB Change Streams (used for wakeup signals) also require a replica set or sharded cluster. If your MongoDB instance is a standalone server, you must convert it to a single-node replica set by running `rs.initiate()` in the mongo shell.
 
 ### Custom Database
 
@@ -552,15 +713,18 @@ EventProcessor(client, handlerMap, {
 
 ### Configuration Reference
 
-| Option                    | Type                      | Default     | Description                                 |
-| ------------------------- | ------------------------- | ----------- | ------------------------------------------- |
-| `sleepTimeMs`             | `number`                  | `5000`      | Milliseconds between polling cycles         |
-| `maxErrors`               | `number`                  | `5`         | Max retry attempts before marking as failed |
-| `backoff`                 | `(count: number) => Date` | Exponential | Calculate next retry time                   |
-| `maxEventConcurrency`     | `number`                  | `5`         | Max events processed simultaneously         |
-| `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently |
-| `logger`                  | `Logger`                  | `undefined` | Custom logger interface                     |
-| `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                         |
+| Option                    | Type                      | Default     | Description                                                                         |
+| ------------------------- | ------------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `pollingIntervalMs`       | `number`                  | `5000`      | Milliseconds between polling cycles (used when no wakeup emitter or as fallback)    |
+| `maxErrors`               | `number`                  | `5`         | Max retry attempts before marking as failed                                         |
+| `backoff`                 | `(count: number) => Date` | Exponential | Calculate next retry time                                                           |
+| `maxEventConcurrency`     | `number`                  | `5`         | Max events processed simultaneously                                                 |
+| `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently                                         |
+| `wakeupEmitter`           | `WakeupEmitter`           | `undefined` | Optional wakeup signal emitter (Postgres NOTIFY or MongoDB Change Streams)          |
+| `wakeupTimeoutMs`         | `number`                  | `30000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter)           |
+| `wakeupThrottleMs`        | `number`                  | `1000`      | Throttle wakeup signals to prevent excessive polling (only used with wakeupEmitter) |
+| `logger`                  | `Logger`                  | `undefined` | Custom logger interface                                                             |
+| `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                                                                 |
 
 ## Usage Examples
 
@@ -594,7 +758,7 @@ await client.connect();
 
 // 3. Create and start the processor
 const processor = EventProcessor(
-  createProcessorClient<EventType>(client),
+  createProcessorClient<EventType>({ querier: client }),
   {
     UserCreated: {
       sendEmail: async (event, { signal }) => {
@@ -715,7 +879,7 @@ gracefulShutdown(server, {
 ### Multiple Event Types
 
 ```typescript
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     sendWelcomeEmail: async (event) => {
       /* ... */
@@ -808,7 +972,7 @@ const kafka = new Kafka({ brokers: ["localhost:9092"] });
 const producer = kafka.producer();
 await producer.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   UserCreated: {
     // Publish to Kafka with guaranteed consistency
     publishToKafka: async (event) => {
@@ -862,7 +1026,7 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient(client), {
+const processor = EventProcessor(createProcessorClient({ querier: client }), {
   // All your handlers...
 });
 
@@ -932,11 +1096,11 @@ Creates a PostgreSQL processor client.
 ```typescript
 import { createProcessorClient } from "txob/pg";
 
-createProcessorClient<EventType>(
-  client: pg.Client,
-  tableName?: string,    // Default: "events"
-  limit?: number         // Default: 100
-): TxOBProcessorClient<EventType>
+createProcessorClient<EventType>(opts: {
+  querier: pg.Client;
+  table?: string;    // Default: "events"
+  limit?: number;   // Default: 100
+}): TxOBProcessorClient<EventType>
 ```
 
 ### `createProcessorClient` (MongoDB)
@@ -946,12 +1110,34 @@ Creates a MongoDB processor client.
 ```typescript
 import { createProcessorClient } from "txob/mongodb";
 
-createProcessorClient<EventType>(
-  db: mongodb.Db,
-  collectionName?: string,  // Default: "events"
-  limit?: number            // Default: 100
-): TxOBProcessorClient<EventType>
+createProcessorClient<EventType>(opts: {
+  mongo: mongodb.MongoClient;
+  db: string;               // Database name
+  collection?: string;      // Default: "events"
+  limit?: number;           // Default: 100
+}): TxOBProcessorClient<EventType>
 ```
+
+### `TxOBError`
+
+Error class to specify custom backoff times for retries.
+
+```typescript
+import { TxOBError } from "txob";
+
+// Throw with custom backoff time
+throw new TxOBError("Rate limit exceeded", {
+  backoffUntil: new Date(Date.now() + 60000), // Retry after 1 minute
+});
+
+// Throw with cause and custom backoff
+throw new TxOBError("Processing failed", {
+  cause: originalError,
+  backoffUntil: new Date(Date.now() + 30000), // Retry after 30 seconds
+});
+```
+
+**Note:** If multiple handlers throw `TxOBError` with different `backoffUntil` dates, the processor will use the latest (maximum) backoff time.
 
 ### `ErrorUnprocessableEventHandler`
 
@@ -962,6 +1148,42 @@ import { ErrorUnprocessableEventHandler } from "txob";
 
 throw new ErrorUnprocessableEventHandler(new Error("Invalid data"));
 ```
+
+### `createWakeupEmitter` (PostgreSQL)
+
+Creates a Postgres NOTIFY-based wakeup emitter to reduce polling frequency.
+
+```typescript
+import { createWakeupEmitter } from "txob/pg";
+
+const wakeupEmitter = await createWakeupEmitter({
+  listenClientConfig: clientConfig,
+  createTrigger: true, // Automatically create database trigger
+  querier: client, // Required if createTrigger is true
+  table: "events", // Optional: table name (default: "events")
+  channel: "txob_events", // Optional: NOTIFY channel (default: "txob_events")
+});
+```
+
+The trigger automatically sends NOTIFY when new events are inserted. The wakeup emitter emits `wakeup` events that trigger immediate polling, reducing the need for constant polling.
+
+### `createWakeupEmitter` (MongoDB)
+
+Creates a MongoDB Change Stream-based wakeup emitter to reduce polling frequency.
+
+```typescript
+import { createWakeupEmitter } from "txob/mongodb";
+
+const wakeupEmitter = await createWakeupEmitter({
+  mongo: mongoClient,
+  db: "myapp",
+  collection: "events", // Optional: collection name (default: "events")
+});
+```
+
+**Important:** MongoDB Change Streams require a replica set or sharded cluster. If your MongoDB instance is a standalone server, you must convert it to a single-node replica set by running `rs.initiate()` in the mongo shell.
+
+If the database is not configured for Change Streams, an error will be emitted via the `error` event on the returned `WakeupEmitter`. The processor will automatically fall back to polling.
 
 ### Types
 
@@ -1126,7 +1348,7 @@ If using `FOR UPDATE SKIP LOCKED` properly (which txob does), stuck events are n
 - Lower `maxEventConcurrency`
 - Profile handlers for memory leaks
 - Archive old events
-- Reduce `limit` in `createProcessorClient(client, table, limit)`
+- Reduce `limit` in `createProcessorClient({ querier: client, table, limit })`
 
 ### Duplicate handler executions
 
@@ -1405,7 +1627,7 @@ type EventType = keyof typeof eventTypes;
 
 // TypeScript will enforce all event types have handlers
 const processor = EventProcessor<EventType>(
-  createProcessorClient<EventType>(client),
+  createProcessorClient<EventType>({ querier: client }),
   {
     UserCreated: {
       /* handlers */

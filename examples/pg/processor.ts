@@ -3,27 +3,40 @@ import { randomUUID } from "node:crypto";
 import {
   ErrorUnprocessableEventHandler,
   EventProcessor,
+  WakeupEmitter,
 } from "../../src/index.js";
-import { createProcessorClient } from "../../src/pg/client.js";
+import {
+  createProcessorClient,
+  createWakeupEmitter,
+} from "../../src/pg/client.js";
 import { migrate, type EventType, eventTypes } from "./server.js";
 import dotenv from "dotenv";
 import { sleep } from "../../src/sleep.js";
 dotenv.config();
 
 let processor: EventProcessor<EventType> | undefined = undefined;
+let wakeupEmitter: WakeupEmitter | undefined = undefined;
 
 (async () => {
-  const client = new pg.Client({
+  const clientConfig: pg.ClientConfig = {
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
     port: parseInt(process.env.POSTGRES_PORT || "5434"),
-  });
+  };
+  const client = new pg.Client(clientConfig);
   await client.connect();
   await migrate(client);
 
+  wakeupEmitter = await createWakeupEmitter({
+    listenClientConfig: clientConfig,
+    createTrigger: true,
+    querier: client,
+  });
+
   processor = new EventProcessor<EventType>({
-    client: createProcessorClient<EventType>(client),
+    client: createProcessorClient<EventType>({ querier: client }),
+    wakeupEmitter,
     handlerMap: {
       ResourceSaved: {
         thing1: async (event) => {
@@ -91,20 +104,18 @@ let processor: EventProcessor<EventType> | undefined = undefined;
 
 const shutdown = (() => {
   let shutdownStarted = false;
-  return () => {
+  return async () => {
     if (shutdownStarted) return;
 
     shutdownStarted = true;
 
-    processor
-      ?.stop()
-      .then(() => {
-        process.exit(0);
-      })
-      .catch((err) => {
-        console.error(err);
-        process.exit(1);
-      });
+    try {
+      await wakeupEmitter?.close();
+    } catch (err) {
+      console.error(err);
+      process.exit(1);
+    }
+    process.exit(0);
   };
 })();
 process.once("SIGTERM", shutdown);

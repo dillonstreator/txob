@@ -59,7 +59,8 @@
   },
   "dependencies": {
     "p-limit": "^7.2.0",
-    "p-queue": "^9.0.1"
+    "p-queue": "^9.0.1",
+    "throttle-debounce": "^5.0.2"
   },
   "peerDependencies": {
     "mongodb": "^7.0.0",
@@ -69,6 +70,7 @@
     "@types/mongodb": "^4.0.7",
     "@types/node": "^25.0.3",
     "@types/pg": "^8.10.9",
+    "@types/throttle-debounce": "^5.0.2",
     "@vitest/coverage-v8": "^4.0.15",
     "copyfiles": "^2.4.1",
     "mongodb": "^7.0.0",
