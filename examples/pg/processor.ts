@@ -35,28 +35,29 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
   });
 
   processor = new EventProcessor<EventType>({
+    maxEventConcurrency: 50,
     client: createProcessorClient<EventType>({ querier: client }),
     wakeupEmitter,
     handlerMap: {
       ResourceSaved: {
         thing1: async (event) => {
           console.log(`${event.id} thing1 ${event.correlation_id}`);
-          if (Math.random() > 0.9) throw new Error("some issue");
+          if (Math.random() > 0.99) throw new Error("some issue");
 
           return;
         },
         thing2: async (event) => {
           console.log(`${event.id} thing2 ${event.correlation_id}`);
-          if (Math.random() > 0.9) throw new Error("some issue");
+          if (Math.random() > 0.96) throw new Error("some issue");
           if (Math.random() > 0.6)
             throw new ErrorUnprocessableEventHandler(new Error("parent error"));
 
           return;
         },
         thing3: async (event) => {
-          await sleep(Math.random() * 10_000);
+          await sleep(Math.random() * 5_000);
           console.log(`${event.id} thing3 ${event.correlation_id}`);
-          if (Math.random() > 0.75) throw new Error("some issue");
+          if (Math.random() > 0.93) throw new Error("some issue");
 
           return;
         },
