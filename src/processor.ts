@@ -6,45 +6,6 @@ import PQueue from "p-queue";
 import { ErrorUnprocessableEventHandler, TxOBError } from "./error.js";
 import { throttle } from "throttle-debounce";
 
-// Helper function to sleep with abort signal support for faster cleanup
-const sleepWithAbort = (ms: number, signal?: AbortSignal): Promise<void> => {
-  if (signal?.aborted) {
-    return Promise.resolve();
-  }
-  if (!signal) {
-    return sleep(ms);
-  }
-
-  let abortHandler: (() => void) | null = null;
-
-  const cleanup = () => {
-    if (abortHandler) {
-      signal.removeEventListener("abort", abortHandler);
-      abortHandler = null;
-    }
-  };
-
-  return Promise.race([
-    sleep(ms).finally(() => {
-      // Always clean up listener when sleep completes (normally or if aborted)
-      cleanup();
-    }),
-    new Promise<void>((resolve) => {
-      abortHandler = () => {
-        cleanup();
-        resolve();
-      };
-      // Check again after setting up listener in case abort happened between checks
-      if (signal.aborted) {
-        cleanup();
-        resolve();
-        return;
-      }
-      signal.addEventListener("abort", abortHandler);
-    }),
-  ]);
-};
-
 type TxOBEventHandlerResult = {
   processed_at?: Date;
   unprocessable_at?: Date;
@@ -125,8 +86,8 @@ const defaultMaxErrors = 5;
 const defaultMaxEventConcurrency = 20;
 const defaultMaxHandlerConcurrency = 10;
 const defaultMaxQueuedEvents = 500;
-const defaultWakeupTimeoutMs = 30_000; // 30 second timeout before fallback polling
-const defaultWakeupThrottleMs = 1_000; // 1s throttle for wakeup signals to prevent excessive polling
+const defaultWakeupTimeoutMs = 60_000;
+const defaultWakeupThrottleMs = 1_000;
 
 type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxErrors: number;
@@ -153,7 +114,7 @@ const processEvent = async <TxOBEventType extends string>({
   handlerMap: TxOBEventHandlerMap<TxOBEventType>;
   unlockedEvent: Pick<TxOBEvent<TxOBEventType>, "id" | "errors">;
   opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>;
-}) => {
+}): Promise<{ backoffUntil?: Date }> => {
   const {
     logger,
     maxErrors = defaultMaxErrors,
@@ -164,7 +125,7 @@ const processEvent = async <TxOBEventType extends string>({
   } = opts ?? {};
 
   if (signal?.aborted) {
-    return;
+    return {};
   }
   if (unlockedEvent.errors >= maxErrors) {
     // Potential issue with client configuration on finding unprocessed events
@@ -177,8 +138,10 @@ const processEvent = async <TxOBEventType extends string>({
       },
       "unexpected event with max errors returned from `getEventsToProcess`",
     );
-    return;
+    return {};
   }
+
+  let backoffUntil: Date | undefined;
 
   await client.transaction(async (txClient) => {
     const lockedEvent = await txClient.getEventByIdForUpdateSkipLocked(
@@ -248,7 +211,7 @@ const processEvent = async <TxOBEventType extends string>({
       `processing event`,
     );
 
-    let backoffs: Date[] = [];
+    const backoffs: Date[] = [];
 
     const handlerLimit = pLimit(maxHandlerConcurrency);
     await Promise.allSettled(
@@ -388,8 +351,12 @@ const processEvent = async <TxOBEventType extends string>({
       lockedEvent.processed_at = getDate();
     }
 
+    backoffUntil = lockedEvent.backoff_until ?? undefined;
+
     await txClient.updateEvent(lockedEvent);
   });
+
+  return { backoffUntil };
 };
 
 export interface Logger {
@@ -506,7 +473,7 @@ export class EventProcessor<TxOBEventType extends string> {
             .add(
               async () => {
                 try {
-                  await processEvent<TxOBEventType>({
+                  const { backoffUntil } = await processEvent<TxOBEventType>({
                     client: this.client,
                     handlerMap: this.handlerMap,
                     unlockedEvent: event,
@@ -515,6 +482,18 @@ export class EventProcessor<TxOBEventType extends string> {
                       signal: this.abortController.signal,
                     },
                   });
+
+                  // Simulate a local wakeup signal after the backoff period
+                  // to reduce latency on backed-off event reprocessing
+                  if (backoffUntil) {
+                    setTimeoutWithAbort(
+                      () => {
+                        this.throttledPoll?.();
+                      },
+                      backoffUntil.getTime() - Date.now(),
+                      this.abortController.signal,
+                    );
+                  }
                 } catch (error) {
                   this.opts.logger?.error(
                     {
@@ -529,7 +508,7 @@ export class EventProcessor<TxOBEventType extends string> {
               },
               { signal: this.abortController.signal },
             )
-            .catch((error) => {
+            .catch(() => {
               // Handle queue.add() rejections (e.g., when aborted)
               // The event processing error is already logged in the task's catch block
               queuedEventIds.delete(event.id);
@@ -580,7 +559,7 @@ export class EventProcessor<TxOBEventType extends string> {
       this.opts.logger?.debug("wakeup signal listener registered");
 
       // Initial poll
-      void poll();
+      this.throttledPoll?.();
 
       // Start fallback polling loop
       // This runs at a lower frequency and only polls if we haven't received a wakeup signal recently
@@ -689,4 +668,63 @@ export class EventProcessor<TxOBEventType extends string> {
       throw caughtErr;
     }
   }
+}
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+  if (!signal) {
+    return sleep(ms);
+  }
+
+  let abortHandler: (() => void) | null = null;
+
+  const cleanup = () => {
+    if (abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+      abortHandler = null;
+    }
+  };
+
+  return Promise.race([
+    sleep(ms).finally(() => {
+      // Always clean up listener when sleep completes (normally or if aborted)
+      cleanup();
+    }),
+    new Promise<void>((resolve) => {
+      abortHandler = () => {
+        cleanup();
+        resolve();
+      };
+      // Check again after setting up listener in case abort happened between checks
+      if (signal.aborted) {
+        cleanup();
+        resolve();
+        return;
+      }
+      signal.addEventListener("abort", abortHandler);
+    }),
+  ]);
+}
+
+function setTimeoutWithAbort(
+  fn: (signal?: AbortSignal) => void,
+  ms: number,
+  signal?: AbortSignal,
+): void {
+  if (signal?.aborted) {
+    return;
+  }
+  let timeout: NodeJS.Timeout | undefined;
+  const handler = () => {
+    clearTimeout(timeout);
+    timeout = undefined;
+    signal?.removeEventListener("abort", handler);
+  };
+  timeout = setTimeout(() => {
+    fn();
+    handler();
+  }, ms);
+  signal?.addEventListener("abort", handler);
 }
