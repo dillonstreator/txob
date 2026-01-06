@@ -486,11 +486,14 @@ export class EventProcessor<TxOBEventType extends string> {
                   // Simulate a local wakeup signal after the backoff period
                   // to reduce latency on backed-off event reprocessing
                   if (backoffUntil) {
-                    sleep(backoffUntil.getTime() - Date.now(), this.abortController.signal)
+                    sleep(
+                      backoffUntil.getTime() - Date.now(),
+                      this.abortController.signal,
+                    )
                       .then(() => {
                         this.throttledPoll?.();
                       })
-                      .catch(() => { });
+                      .catch(() => {});
                   }
                 } catch (error) {
                   this.opts.logger?.error(
@@ -568,7 +571,7 @@ export class EventProcessor<TxOBEventType extends string> {
             await sleep(
               this.opts.pollingIntervalMs,
               this.abortController.signal,
-            ).catch(() => { });
+            ).catch(() => {});
 
             if (this.abortController.signal.aborted) {
               break;
@@ -608,7 +611,7 @@ export class EventProcessor<TxOBEventType extends string> {
             await sleep(
               this.opts.pollingIntervalMs,
               this.abortController.signal,
-            ).catch(() => { });
+            ).catch(() => {});
           } while (!this.abortController.signal.aborted);
         } catch (error) {
           this.opts.logger?.error({ error }, "polling loop error");
