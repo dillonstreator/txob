@@ -486,13 +486,11 @@ export class EventProcessor<TxOBEventType extends string> {
                   // Simulate a local wakeup signal after the backoff period
                   // to reduce latency on backed-off event reprocessing
                   if (backoffUntil) {
-                    setTimeoutWithAbort(
-                      () => {
+                    sleep(backoffUntil.getTime() - Date.now(), this.abortController.signal)
+                      .then(() => {
                         this.throttledPoll?.();
-                      },
-                      backoffUntil.getTime() - Date.now(),
-                      this.abortController.signal,
-                    );
+                      })
+                      .catch(() => { });
                   }
                 } catch (error) {
                   this.opts.logger?.error(
@@ -567,10 +565,10 @@ export class EventProcessor<TxOBEventType extends string> {
       (async () => {
         try {
           do {
-            await sleepWithAbort(
+            await sleep(
               this.opts.pollingIntervalMs,
               this.abortController.signal,
-            );
+            ).catch(() => { });
 
             if (this.abortController.signal.aborted) {
               break;
@@ -607,10 +605,10 @@ export class EventProcessor<TxOBEventType extends string> {
         try {
           do {
             await poll();
-            await sleepWithAbort(
+            await sleep(
               this.opts.pollingIntervalMs,
               this.abortController.signal,
-            );
+            ).catch(() => { });
           } while (!this.abortController.signal.aborted);
         } catch (error) {
           this.opts.logger?.error({ error }, "polling loop error");
@@ -668,63 +666,4 @@ export class EventProcessor<TxOBEventType extends string> {
       throw caughtErr;
     }
   }
-}
-
-function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.resolve();
-  }
-  if (!signal) {
-    return sleep(ms);
-  }
-
-  let abortHandler: (() => void) | null = null;
-
-  const cleanup = () => {
-    if (abortHandler) {
-      signal.removeEventListener("abort", abortHandler);
-      abortHandler = null;
-    }
-  };
-
-  return Promise.race([
-    sleep(ms).finally(() => {
-      // Always clean up listener when sleep completes (normally or if aborted)
-      cleanup();
-    }),
-    new Promise<void>((resolve) => {
-      abortHandler = () => {
-        cleanup();
-        resolve();
-      };
-      // Check again after setting up listener in case abort happened between checks
-      if (signal.aborted) {
-        cleanup();
-        resolve();
-        return;
-      }
-      signal.addEventListener("abort", abortHandler);
-    }),
-  ]);
-}
-
-function setTimeoutWithAbort(
-  fn: (signal?: AbortSignal) => void,
-  ms: number,
-  signal?: AbortSignal,
-): void {
-  if (signal?.aborted) {
-    return;
-  }
-  let timeout: NodeJS.Timeout | undefined;
-  const handler = () => {
-    clearTimeout(timeout);
-    timeout = undefined;
-    signal?.removeEventListener("abort", handler);
-  };
-  timeout = setTimeout(() => {
-    fn();
-    handler();
-  }, ms);
-  signal?.addEventListener("abort", handler);
 }

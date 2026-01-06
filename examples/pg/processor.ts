@@ -49,15 +49,13 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
         thing2: async (event) => {
           console.log(`${event.id} thing2 ${event.correlation_id}`);
           if (Math.random() > 0.96) throw new Error("some issue");
-          if (Math.random() > 0.6)
-            throw new ErrorUnprocessableEventHandler(new Error("parent error"));
 
           return;
         },
         thing3: async (event) => {
-          await sleep(Math.random() * 5_000);
+          await sleep(Math.random() * 1_000);
           console.log(`${event.id} thing3 ${event.correlation_id}`);
-          if (Math.random() > 0.93) throw new Error("some issue");
+          if (Math.random() > 0.8) throw new Error("some issue");
 
           return;
         },
@@ -69,17 +67,12 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
     },
     pollingIntervalMs: 5000,
     logger: console,
-    onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
+    onEventMaxErrorsReached: async ({ event, txClient }) => {
       // Transactionally persist an 'event max errors reached' event
       // This hook is called when:
       // - Maximum allowed errors are reached
       // - An unprocessable error is encountered
       // - Event handler map is missing for the event type
-
-      // Use the abort signal for cleanup during graceful shutdown
-      if (signal?.aborted) {
-        return;
-      }
 
       await txClient.createEvent({
         id: randomUUID(),
