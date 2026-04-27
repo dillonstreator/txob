@@ -704,6 +704,16 @@ EventProcessor(client, handlerMap, {
     error: (msg, ...args) => console.error(msg, ...args),
   },
 
+  // OpenTelemetry-compatible tracing and metrics (default: undefined)
+  telemetry: {
+    tracer: trace.getTracer("txob"),
+    meter: metrics.getMeter("txob"),
+    attributes: {
+      "service.name": "orders-worker",
+      "deployment.environment": "production",
+    },
+  },
+
   // Hook called when max errors reached (default: undefined)
   onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
     // Create a dead-letter event, send alerts, etc.
@@ -724,6 +734,7 @@ EventProcessor(client, handlerMap, {
 | `wakeupTimeoutMs`         | `number`                  | `30000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter)           |
 | `wakeupThrottleMs`        | `number`                  | `1000`      | Throttle wakeup signals to prevent excessive polling (only used with wakeupEmitter) |
 | `logger`                  | `Logger`                  | `undefined` | Custom logger interface                                                             |
+| `telemetry`               | `TxOBTelemetry`           | `undefined` | OpenTelemetry-compatible tracer, meter, and shared attributes                       |
 | `onEventMaxErrorsReached` | `function`                | `undefined` | Hook for max errors                                                                 |
 
 ## Usage Examples
@@ -1568,7 +1579,34 @@ EventProcessor(client, handlers, {
 
 ### How do I monitor event processing?
 
-**1. Use the logger option:**
+**1. Enable OpenTelemetry-compatible telemetry:**
+
+txob can emit spans and metrics without depending on a specific telemetry SDK. Install and configure OpenTelemetry in your application, then pass a `Tracer` and/or `Meter` to opt in:
+
+```typescript
+import { metrics, trace } from "@opentelemetry/api";
+
+const processor = new EventProcessor({
+  client: createProcessorClient({ querier: client }),
+  handlerMap: handlers,
+  telemetry: {
+    tracer: trace.getTracer("txob"),
+    meter: metrics.getMeter("txob"),
+    attributes: {
+      "service.name": "orders-worker",
+      "deployment.environment": process.env.NODE_ENV ?? "development",
+    },
+  },
+});
+```
+
+This records `txob.poll`, `txob.event.process`, and `txob.handler.process` spans plus `txob.poll.count`, `txob.poll.duration`, `txob.event.processing.count`, `txob.event.processing.duration`, `txob.handler.processing.count`, and `txob.handler.processing.duration` metrics. Metrics use low-cardinality attributes such as event type, handler name, and outcome; event IDs and correlation IDs are only attached to spans.
+
+The full set of telemetry names is exported as constants from `txob`: `TxOBTelemetrySpanName`, `TxOBTelemetryMetricName`, `TxOBTelemetryAttributeKey`, `TxOBTelemetryEventOutcome`, `TxOBTelemetryHandlerOutcome`, and `TxOBTelemetryPollOutcome`.
+
+txob surfaces failures while creating metric instruments during processor construction so misconfigured telemetry is visible at startup. Runtime telemetry operations, including span creation and metric recording, are best-effort and will not interrupt event processing if an exporter or SDK callback fails.
+
+**2. Use the logger option:**
 
 ```typescript
 EventProcessor(client, handlers, {
@@ -1576,7 +1614,7 @@ EventProcessor(client, handlers, {
 });
 ```
 
-**2. Query the events table:**
+**3. Query the events table:**
 
 ```sql
 -- Pending events
@@ -1594,7 +1632,7 @@ FROM events WHERE processed_at IS NOT NULL
 GROUP BY type;
 ```
 
-**3. Create monitoring events:**
+**4. Create monitoring events:**
 
 ```typescript
 onEventMaxErrorsReached: async ({ event, txClient }) => {
