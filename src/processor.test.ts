@@ -2,6 +2,13 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventProcessor, TxOBEvent, defaultBackoff } from "./processor.js";
 import { TxOBError, ErrorUnprocessableEventHandler } from "./error.js";
 import { sleep } from "./sleep.js";
+import {
+  TxOBTelemetryAttributeKey,
+  TxOBTelemetryEventOutcome,
+  TxOBTelemetryHandlerOutcome,
+  TxOBTelemetryMetricName,
+  TxOBTelemetrySpanName,
+} from "./telemetry.js";
 
 const mockTxClient = {
   getEventByIdForUpdateSkipLocked: vi.fn(),
@@ -1251,5 +1258,225 @@ describe("EventProcessor - basic", () => {
     expect(mockClient.transaction).not.toHaveBeenCalled();
     expect(mockTxClient.getEventByIdForUpdateSkipLocked).not.toHaveBeenCalled();
     expect(mockTxClient.updateEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("EventProcessor - telemetry", () => {
+  it("records OpenTelemetry-compatible spans and metrics when enabled", async () => {
+    const counters = new Map<string, { add: ReturnType<typeof vi.fn> }>();
+    const histograms = new Map<string, { record: ReturnType<typeof vi.fn> }>();
+    const spans: {
+      name: string;
+      setAttributes: ReturnType<typeof vi.fn>;
+      recordException: ReturnType<typeof vi.fn>;
+      setStatus: ReturnType<typeof vi.fn>;
+      end: ReturnType<typeof vi.fn>;
+    }[] = [];
+    const meter = {
+      createCounter: vi.fn((name: string) => {
+        const counter = { add: vi.fn() };
+        counters.set(name, counter);
+        return counter;
+      }),
+      createHistogram: vi.fn((name: string) => {
+        const histogram = { record: vi.fn() };
+        histograms.set(name, histogram);
+        return histogram;
+      }),
+    };
+    const tracer = {
+      startSpan: vi.fn((name: string) => {
+        const span = {
+          name,
+          setAttributes: vi.fn(),
+          recordException: vi.fn(),
+          setStatus: vi.fn(),
+          end: vi.fn(),
+        };
+        spans.push(span);
+        return span;
+      }),
+    };
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.resolve()),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    let callCount = 0;
+    mockClient.getEventsToProcess.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve(callCount === 1 ? [evt1] : []);
+    });
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
+    mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
+
+    const processor = new EventProcessor({
+      client: mockClient,
+      handlerMap,
+      pollingIntervalMs: 10,
+      telemetry: {
+        meter,
+        tracer,
+        attributes: {
+          "service.name": "txob-test",
+        },
+      },
+    });
+    processor.start();
+    await sleep(50);
+    await processor.stop();
+
+    expect(meter.createCounter).toHaveBeenCalledWith(
+      TxOBTelemetryMetricName.EventProcessingCount,
+      expect.any(Object),
+    );
+    expect(meter.createHistogram).toHaveBeenCalledWith(
+      TxOBTelemetryMetricName.HandlerProcessingDuration,
+      expect.any(Object),
+    );
+    expect(tracer.startSpan).toHaveBeenCalledWith(
+      TxOBTelemetrySpanName.EventProcess,
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "service.name": "txob-test",
+          [TxOBTelemetryAttributeKey.EventId]: "1",
+          [TxOBTelemetryAttributeKey.EventType]: "evtType1",
+          [TxOBTelemetryAttributeKey.EventCorrelationId]: "abc123",
+        }),
+      }),
+    );
+    expect(spans.map((span) => span.name)).toEqual(
+      expect.arrayContaining([
+        TxOBTelemetrySpanName.Poll,
+        TxOBTelemetrySpanName.EventProcess,
+        TxOBTelemetrySpanName.HandlerProcess,
+      ]),
+    );
+    expect(
+      counters.get(TxOBTelemetryMetricName.EventProcessingCount)?.add,
+    ).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        "service.name": "txob-test",
+        [TxOBTelemetryAttributeKey.EventType]: "evtType1",
+        [TxOBTelemetryAttributeKey.EventOutcome]:
+          TxOBTelemetryEventOutcome.Success,
+      }),
+    );
+    expect(
+      counters.get(TxOBTelemetryMetricName.HandlerProcessingCount)?.add,
+    ).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        "service.name": "txob-test",
+        [TxOBTelemetryAttributeKey.EventType]: "evtType1",
+        [TxOBTelemetryAttributeKey.HandlerName]: "handler1",
+        [TxOBTelemetryAttributeKey.HandlerOutcome]:
+          TxOBTelemetryHandlerOutcome.Success,
+      }),
+    );
+    expect(
+      histograms.get(TxOBTelemetryMetricName.EventProcessingDuration)?.record,
+    ).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.objectContaining({
+        [TxOBTelemetryAttributeKey.EventType]: "evtType1",
+        [TxOBTelemetryAttributeKey.EventOutcome]:
+          TxOBTelemetryEventOutcome.Success,
+      }),
+    );
+    expect(
+      spans.find((span) => span.name === TxOBTelemetrySpanName.EventProcess)
+        ?.setStatus,
+    ).toHaveBeenCalledWith({ code: 1 });
+  });
+
+  it("surfaces failures when creating metric instruments", () => {
+    const metricError = new Error("counter failed");
+
+    expect(
+      () =>
+        new EventProcessor({
+          client: mockClient,
+          handlerMap: {},
+          pollingIntervalMs: 10,
+          telemetry: {
+            meter: {
+              createCounter: vi.fn(() => {
+                throw metricError;
+              }),
+              createHistogram: vi.fn(),
+            },
+          },
+        }),
+    ).toThrow(metricError);
+  });
+
+  it("does not let runtime telemetry failures interrupt processing", async () => {
+    const handlerMap = {
+      evtType1: {
+        handler1: vi.fn(() => Promise.resolve()),
+      },
+    };
+    const evt1: TxOBEvent<keyof typeof handlerMap> = {
+      type: "evtType1",
+      id: "1",
+      timestamp: now,
+      data: {},
+      correlation_id: "abc123",
+      handler_results: {},
+      errors: 0,
+    };
+    let callCount = 0;
+    mockClient.getEventsToProcess.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve(callCount === 1 ? [evt1] : []);
+    });
+    mockTxClient.getEventByIdForUpdateSkipLocked.mockImplementation(() =>
+      Promise.resolve(evt1),
+    );
+    mockTxClient.updateEvent.mockImplementation(() => Promise.resolve());
+
+    const processor = new EventProcessor({
+      client: mockClient,
+      handlerMap,
+      pollingIntervalMs: 10,
+      telemetry: {
+        meter: {
+          createCounter: vi.fn(() => ({
+            add: vi.fn(() => {
+              throw new Error("counter add failed");
+            }),
+          })),
+          createHistogram: vi.fn(() => ({
+            record: vi.fn(() => {
+              throw new Error("histogram record failed");
+            }),
+          })),
+        },
+        tracer: {
+          startSpan: vi.fn(() => {
+            throw new Error("span failed");
+          }),
+        },
+      },
+    });
+    processor.start();
+    await sleep(50);
+    await processor.stop();
+
+    expect(handlerMap.evtType1.handler1).toHaveBeenCalledOnce();
+    expect(mockTxClient.updateEvent).toHaveBeenCalledOnce();
   });
 });
