@@ -1404,18 +1404,93 @@ This is expected behavior due to **at-least-once delivery**. It happens when:
 - Event update fails after handler succeeds
 - Processor crashes after handler succeeds but before updating event
 
-**Solution:** Make handlers idempotent:
+**Solution:** Make handlers idempotent. Prefer pushing idempotency to the downstream system over check-then-act in the handler.
+
+**Why check-then-act is fragile:**
 
 ```typescript
-// ✅ Idempotent: Check before doing work
+// ❌ Race-prone: check + do + mark is not atomic across processes
 const handler = async (event) => {
-  const alreadyDone = await checkWorkStatus(event.id);
+  const alreadyDone = await checkWorkStatus(event.id); // T1: false
   if (alreadyDone) return;
-
-  await doWork(event.data);
+  // Another retry/processor can read `false` here too before T1 marks done
+  await doWork(event.data); // executed twice
   await markWorkDone(event.id);
 };
 ```
+
+This pattern only works if `checkWorkStatus` + `doWork` + `markWorkDone` runs under a strict distributed lock or the downstream system itself rejects duplicates. txob already serializes per-event execution via `FOR UPDATE SKIP LOCKED`, but if `doWork` mutates an external system the local "already done" record can be out of sync (handler succeeded, update failed, retry sees no record).
+
+**Better: rely on downstream idempotency.** Pass `event.id` (or a derived key) as an idempotency key the external system enforces:
+
+```typescript
+// ✅ Stripe rejects duplicate idempotency keys server-side
+const createStripeCharge = async (event) => {
+  await stripe.charges.create(
+    { amount: event.data.amount, customer: event.data.customerId },
+    { idempotencyKey: event.id },
+  );
+};
+
+// ✅ Upsert by event-derived id — DB enforces uniqueness
+const recordPayment = async (event) => {
+  await db.query(
+    `INSERT INTO payments (event_id, amount) VALUES ($1, $2)
+     ON CONFLICT (event_id) DO NOTHING`,
+    [event.id, event.data.amount],
+  );
+};
+
+// ✅ Kafka idempotent producer + event.id key dedupes within the producer session
+await producer.send({
+  topic: "user-events",
+  messages: [{ key: event.id, value: JSON.stringify(event.data) }],
+});
+```
+
+### Handlers that mutate external systems
+
+Avoid handler patterns that look like 2PC across the database and an external system — there is no way to make them atomic. Don't try to mirror external state into your database from inside the handler that triggered the mutation. The reliable pattern is:
+
+1. Handler issues the external mutation with an idempotency key (`event.id`) and returns.
+2. The external system signals completion via **webhook**.
+3. Your webhook endpoint applies the local mutation and, in the same transaction, raises any **domain-specific** txob events that downstream handlers care about.
+
+```typescript
+// ✅ Handler kicks off external work and returns — no waiting, no mirror writes
+UserSignedUp: {
+  startKycCheck: async (event) => {
+    await kyc.start({ userId: event.data.userId, idempotencyKey: event.id });
+  },
+}
+
+// ✅ Webhook endpoint applies the mutation and emits a domain event in the same transaction
+app.post("/webhooks/kyc", async (req, res) => {
+  await db.transaction(async (tx) => {
+    await tx.users.update(req.body.userId, { kycStatus: req.body.status });
+
+    if (req.body.status === "approved") {
+      // Raise a domain event — not a "KycWebhookReceived" plumbing event
+      await tx.events.insert({
+        id: randomUUID(),
+        type: "UserKycApproved",
+        data: { userId: req.body.userId },
+        correlation_id: req.body.correlationId,
+        handler_results: {},
+        errors: 0,
+      });
+    }
+  });
+  res.sendStatus(200);
+});
+```
+
+**Why:**
+
+- Handlers stay fast and bounded — no waiting on remote state machines
+- Retries are safe because the external system enforces idempotency
+- Local state converges from authoritative external signals, not optimistic local writes
+- txob events stay aligned with **domain concepts** (`UserKycApproved`), not transport plumbing (`KycWebhookReceived`) — downstream handlers depend on meaning, not delivery mechanism
 
 ## Frequently Asked Questions
 
