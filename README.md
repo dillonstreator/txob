@@ -77,7 +77,7 @@ await db.query("COMMIT");
 - ✅ **Graceful shutdown** - Finish processing in-flight events before shutting down
 - ✅ **Horizontal scalability** - Run multiple processors without conflicts using row-level locking
 - ✅ **Database agnostic** - Built-in support for PostgreSQL and MongoDB, or implement your own
-- ✅ **Reduced polling frequency** - Optional wakeup signals (Postgres NOTIFY, MongoDB Change Streams) to reduce database load and reduce latency
+- ✅ **Near-realtime delivery** - Optional wakeup signals (Postgres NOTIFY, MongoDB Change Streams) trigger immediate processing when events are inserted, with polling as a fallback
 - ✅ **Configurable error handling** - Exponential backoff, max retries, and custom error hooks
 - ✅ **TypeScript-first** - Full type safety and autocompletion
 - ✅ **Handler result tracking** - Track the execution status of each handler independently
@@ -129,22 +129,25 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient({ querier: client }), {
-  UserCreated: {
-    // Handlers are processed concurrently and independently with retries
-    // If one handler fails, others continue processing
-    sendWelcomeEmail: async (event, { signal }) => {
-      await emailService.send({
-        to: event.data.email,
-        subject: "Welcome!",
-        template: "welcome",
-      });
-    },
-    createStripeCustomer: async (event, { signal }) => {
-      await stripe.customers.create({
-        email: event.data.email,
-        metadata: { userId: event.data.userId },
-      });
+const processor = new EventProcessor({
+  client: createProcessorClient({ querier: client }),
+  handlerMap: {
+    UserCreated: {
+      // Handlers are processed concurrently and independently with retries
+      // If one handler fails, others continue processing
+      sendWelcomeEmail: async (event, { signal }) => {
+        await emailService.send({
+          to: event.data.email,
+          subject: "Welcome!",
+          template: "welcome",
+        });
+      },
+      createStripeCustomer: async (event, { signal }) => {
+        await stripe.customers.create({
+          email: event.data.email,
+          metadata: { userId: event.data.userId },
+        });
+      },
     },
   },
 });
@@ -183,9 +186,9 @@ await client.query("COMMIT");
 
 That's it! The processor will automatically poll for new events and execute your handlers.
 
-**Optional: Reduce polling with wakeup signals**
+**Optional: Near-realtime delivery with wakeup signals**
 
-For better performance, you can set up wakeup signals to reduce polling frequency:
+By default, the processor polls every `pollingIntervalMs` (5s). Add a wakeup emitter to trigger immediate processing the moment an event is inserted, dropping latency from seconds to milliseconds while keeping polling as a safety net.
 
 ```typescript
 // PostgreSQL: Use Postgres NOTIFY
@@ -197,7 +200,7 @@ const wakeupEmitter = await createWakeupEmitter({
   querier: client,
 });
 
-// MongoDB: Use Change Streams
+// MongoDB: Use Change Streams (requires replica set or sharded cluster)
 import { createWakeupEmitter } from "txob/mongodb";
 
 const wakeupEmitter = await createWakeupEmitter({
@@ -208,7 +211,7 @@ const wakeupEmitter = await createWakeupEmitter({
 // Use with EventProcessor
 const processor = new EventProcessor({
   client: processorClient,
-  wakeupEmitter, // Polls immediately when new events arrive
+  wakeupEmitter, // Processor polls immediately on each wakeup signal
   handlerMap: {
     /* ... */
   },
@@ -218,8 +221,8 @@ const processor = new EventProcessor({
 When a wakeup emitter is provided, the processor will:
 
 - Poll immediately when new events are inserted (via wakeup signal)
-- Still poll periodically as a fallback if wakeup signals are missed
-- Throttle wakeup signals to prevent excessive polling during bursts
+- Throttle wakeup signals (`wakeupThrottleMs`) to coalesce bursts
+- Fall back to interval polling (`pollingIntervalMs`) if no wakeup signal is received within `wakeupTimeoutMs`
 
 ## How It Works
 
@@ -393,7 +396,9 @@ txob provides sophisticated error handling:
 **1. Automatic Retries with Backoff**
 
 ```typescript
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   maxErrors: 5, // Retry up to 5 times
   backoff: (errorCount) => {
     // Custom backoff strategy
@@ -454,7 +459,9 @@ UserCreated: {
 When an event reaches max errors, you can create a "dead letter" event:
 
 ```typescript
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   onEventMaxErrorsReached: async ({ event, txClient, signal }) => {
     // Save a failure event in the same transaction
     await txClient.createEvent({
@@ -675,14 +682,17 @@ See [src/pg/client.ts](./src/pg/client.ts) or [src/mongodb/client.ts](./src/mong
 ### Processor Options
 
 ```typescript
-EventProcessor(client, handlerMap, {
-  // Polling interval in milliseconds (default: 5000)
-  sleepTimeMs: 5000,
+new EventProcessor({
+  client,
+  handlerMap,
+
+  // Polling interval in milliseconds, also used as fallback when wakeupEmitter is set (default: 5000)
+  pollingIntervalMs: 5000,
 
   // Maximum errors before marking event as processed/failed (default: 5)
   maxErrors: 5,
 
-  // Backoff calculation function (default: exponential backoff)
+  // Backoff calculation function (default: exponential backoff capped at 60s)
   backoff: (errorCount: number): Date => {
     const baseDelayMs = 1000;
     const maxDelayMs = 60000;
@@ -690,11 +700,23 @@ EventProcessor(client, handlerMap, {
     return new Date(Date.now() + backoffMs);
   },
 
-  // Maximum concurrent events being processed (default: 5)
-  maxEventConcurrency: 5,
+  // Maximum concurrent events being processed (default: 20)
+  maxEventConcurrency: 20,
 
   // Maximum concurrent handlers per event (default: 10)
   maxHandlerConcurrency: 10,
+
+  // Maximum events buffered in the in-memory queue before polling pauses (default: 500)
+  maxQueuedEvents: 500,
+
+  // Optional wakeup emitter for near-realtime processing (default: undefined)
+  wakeupEmitter,
+
+  // Fallback poll fires if no wakeup signal received in this window (default: 60000)
+  wakeupTimeoutMs: 60000,
+
+  // Throttle wakeup signals to coalesce bursts (default: 1000)
+  wakeupThrottleMs: 1000,
 
   // Custom logger (default: undefined)
   logger: {
@@ -728,10 +750,11 @@ EventProcessor(client, handlerMap, {
 | `pollingIntervalMs`       | `number`                  | `5000`      | Milliseconds between polling cycles (used when no wakeup emitter or as fallback)    |
 | `maxErrors`               | `number`                  | `5`         | Max retry attempts before marking as failed                                         |
 | `backoff`                 | `(count: number) => Date` | Exponential | Calculate next retry time                                                           |
-| `maxEventConcurrency`     | `number`                  | `5`         | Max events processed simultaneously                                                 |
+| `maxEventConcurrency`     | `number`                  | `20`        | Max events processed simultaneously                                                 |
 | `maxHandlerConcurrency`   | `number`                  | `10`        | Max handlers per event running concurrently                                         |
+| `maxQueuedEvents`         | `number`                  | `500`       | Max events buffered in-memory before polling pauses                                 |
 | `wakeupEmitter`           | `WakeupEmitter`           | `undefined` | Optional wakeup signal emitter (Postgres NOTIFY or MongoDB Change Streams)          |
-| `wakeupTimeoutMs`         | `number`                  | `30000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter)           |
+| `wakeupTimeoutMs`         | `number`                  | `60000`     | Fallback poll if no wakeup signal received (only used with wakeupEmitter)           |
 | `wakeupThrottleMs`        | `number`                  | `1000`      | Throttle wakeup signals to prevent excessive polling (only used with wakeupEmitter) |
 | `logger`                  | `Logger`                  | `undefined` | Custom logger interface                                                             |
 | `telemetry`               | `TxOBTelemetry`           | `undefined` | OpenTelemetry-compatible tracer, meter, and shared attributes                       |
@@ -768,9 +791,9 @@ const client = new pg.Client({
 await client.connect();
 
 // 3. Create and start the processor
-const processor = EventProcessor(
-  createProcessorClient<EventType>({ querier: client }),
-  {
+const processor = new EventProcessor<EventType>({
+  client: createProcessorClient<EventType>({ querier: client }),
+  handlerMap: {
     UserCreated: {
       sendEmail: async (event, { signal }) => {
         // Check if email was already sent (idempotency)
@@ -804,26 +827,24 @@ const processor = EventProcessor(
       },
     },
   },
-  {
-    sleepTimeMs: 5000,
-    maxErrors: 5,
-    logger: console,
-    onEventMaxErrorsReached: async ({ event, txClient }) => {
-      await txClient.createEvent({
-        id: randomUUID(),
-        timestamp: new Date(),
-        type: eventTypes.EventMaxErrorsReached,
-        data: {
-          eventId: event.id,
-          eventType: event.type,
-        },
-        correlation_id: event.correlation_id,
-        handler_results: {},
-        errors: 0,
-      });
-    },
+  pollingIntervalMs: 5000,
+  maxErrors: 5,
+  logger: console,
+  onEventMaxErrorsReached: async ({ event, txClient }) => {
+    await txClient.createEvent({
+      id: randomUUID(),
+      timestamp: new Date(),
+      type: eventTypes.EventMaxErrorsReached,
+      data: {
+        eventId: event.id,
+        eventType: event.type,
+      },
+      correlation_id: event.correlation_id,
+      handler_results: {},
+      errors: 0,
+    });
   },
-);
+});
 
 processor.start();
 
@@ -890,34 +911,37 @@ gracefulShutdown(server, {
 ### Multiple Event Types
 
 ```typescript
-const processor = EventProcessor(createProcessorClient({ querier: client }), {
-  UserCreated: {
-    sendWelcomeEmail: async (event) => {
-      /* ... */
+const processor = new EventProcessor({
+  client: createProcessorClient({ querier: client }),
+  handlerMap: {
+    UserCreated: {
+      sendWelcomeEmail: async (event) => {
+        /* ... */
+      },
+      createStripeCustomer: async (event) => {
+        /* ... */
+      },
     },
-    createStripeCustomer: async (event) => {
-      /* ... */
-    },
-  },
 
-  OrderPlaced: {
-    sendConfirmationEmail: async (event) => {
-      /* ... */
+    OrderPlaced: {
+      sendConfirmationEmail: async (event) => {
+        /* ... */
+      },
+      updateInventory: async (event) => {
+        /* ... */
+      },
+      notifyWarehouse: async (event) => {
+        /* ... */
+      },
     },
-    updateInventory: async (event) => {
-      /* ... */
-    },
-    notifyWarehouse: async (event) => {
-      /* ... */
-    },
-  },
 
-  PaymentFailed: {
-    sendRetryEmail: async (event) => {
-      /* ... */
-    },
-    logToAnalytics: async (event) => {
-      /* ... */
+    PaymentFailed: {
+      sendRetryEmail: async (event) => {
+        /* ... */
+      },
+      logToAnalytics: async (event) => {
+        /* ... */
+      },
     },
   },
 });
@@ -946,7 +970,9 @@ const fibonacciBackoff = (() => {
   };
 })();
 
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   backoff: linearBackoff, // or fixedBackoff, or fibonacciBackoff
 });
 ```
@@ -983,30 +1009,33 @@ const kafka = new Kafka({ brokers: ["localhost:9092"] });
 const producer = kafka.producer();
 await producer.connect();
 
-const processor = EventProcessor(createProcessorClient({ querier: client }), {
-  UserCreated: {
-    // Publish to Kafka with guaranteed consistency
-    publishToKafka: async (event) => {
-      // Kafka's idempotent producer handles deduplication
-      // Using event.id as the key ensures retries are safe
-      await producer.send({
-        topic: "user-events",
-        messages: [
-          {
-            key: event.id, // Use event.id for idempotency
-            value: JSON.stringify({
-              type: event.type,
-              data: event.data,
-              timestamp: event.timestamp,
-            }),
-          },
-        ],
-      });
-    },
+const processor = new EventProcessor({
+  client: createProcessorClient({ querier: client }),
+  handlerMap: {
+    UserCreated: {
+      // Publish to Kafka with guaranteed consistency
+      publishToKafka: async (event) => {
+        // Kafka's idempotent producer handles deduplication
+        // Using event.id as the key ensures retries are safe
+        await producer.send({
+          topic: "user-events",
+          messages: [
+            {
+              key: event.id, // Use event.id for idempotency
+              value: JSON.stringify({
+                type: event.type,
+                data: event.data,
+                timestamp: event.timestamp,
+              }),
+            },
+          ],
+        });
+      },
 
-    // Also handle other side effects
-    sendEmail: async (event) => {
-      await emailService.send(event.data.email);
+      // Also handle other side effects
+      sendEmail: async (event) => {
+        await emailService.send(event.data.email);
+      },
     },
   },
 });
@@ -1037,8 +1066,11 @@ const client = new pg.Client({
 });
 await client.connect();
 
-const processor = EventProcessor(createProcessorClient({ querier: client }), {
-  // All your handlers...
+const processor = new EventProcessor({
+  client: createProcessorClient({ querier: client }),
+  handlerMap: {
+    // All your handlers...
+  },
 });
 
 processor.start();
@@ -1073,17 +1105,18 @@ All three will coordinate using database row locking (`FOR UPDATE SKIP LOCKED`).
 
 ## API Reference
 
-### `EventProcessor(client, handlerMap, options?)`
+### `new EventProcessor(opts)`
 
-Creates and returns a processor instance with `start()` and `stop()` methods.
+Constructs a processor instance with `start()` and `stop()` methods.
 
-**Parameters:**
+**Options (`opts`):**
 
-- `client`: `TxOBProcessorClient<EventType>` - Database client
-- `handlerMap`: `TxOBEventHandlerMap<EventType>` - Map of event types to handlers
-- `options?`: `ProcessorOptions` - Configuration options
+- `client`: `TxOBProcessorClient<EventType>` - Database client (required)
+- `handlerMap`: `TxOBEventHandlerMap<EventType>` - Map of event types to handlers (required)
+- `wakeupEmitter?`: `WakeupEmitter` - Optional wakeup emitter for near-realtime processing
+- `pollingIntervalMs?`, `wakeupTimeoutMs?`, `wakeupThrottleMs?`, `maxErrors?`, `backoff?`, `maxEventConcurrency?`, `maxHandlerConcurrency?`, `maxQueuedEvents?`, `logger?`, `telemetry?`, `onEventMaxErrorsReached?` - see [Configuration Reference](#configuration-reference)
 
-**Returns:**
+**Methods:**
 
 ```typescript
 {
@@ -1095,7 +1128,7 @@ Creates and returns a processor instance with `start()` and `stop()` methods.
 **Example:**
 
 ```typescript
-const processor = EventProcessor(client, handlers);
+const processor = new EventProcessor({ client, handlerMap: handlers });
 processor.start();
 await processor.stop({ timeoutMs: 10000 }); // 10 second timeout
 ```
@@ -1267,19 +1300,20 @@ interface Logger {
 - **Don't ignore errors** - Handle them appropriately or let them propagate
 - **Don't skip the indexes** - Performance will degrade rapidly
 - **Don't save events outside transactions** - Defeats the purpose of the outbox pattern
-- **Don't use for real-time processing** - Polling introduces latency (default 5s)
+- **Don't use for hard real-time processing** - Without wakeup signals, polling introduces latency up to `pollingIntervalMs` (default 5s); with wakeup signals latency drops to tens of ms but is still bounded by handler execution and `wakeupThrottleMs`
 - **Don't modify events in handlers** - Event object is read-only
 - **Don't share mutable state** - Handlers may run concurrently
 - **Don't forget correlation IDs** - Makes debugging distributed issues very difficult
 
 ### Performance Tips
 
-1. **Tune concurrency limits** - Adjust `maxEventConcurrency` and `maxHandlerConcurrency` based on your workload
-2. **Reduce polling interval** - Lower `sleepTimeMs` for lower latency (at cost of more database queries)
-3. **Batch operations** - If handlers can batch work, collect multiple events
-4. **Monitor query performance** - Use `EXPLAIN ANALYZE` on the `getEventsToProcess` query
-5. **Partition the events table** - For very high volume, partition by `processed_at` or `timestamp`
-6. **Archive processed events** - Move old processed events to archive table to keep main table small
+1. **Enable wakeup signals** - Pass a `wakeupEmitter` (Postgres NOTIFY or MongoDB Change Streams) to drop processing latency from seconds to milliseconds without increasing poll frequency
+2. **Tune concurrency limits** - Adjust `maxEventConcurrency` and `maxHandlerConcurrency` based on your workload
+3. **Reduce polling interval** - Lower `pollingIntervalMs` for lower latency without wakeup signals (at cost of more database queries)
+4. **Batch operations** - If handlers can batch work, collect multiple events
+5. **Monitor query performance** - Use `EXPLAIN ANALYZE` on the `getEventsToProcess` query
+6. **Partition the events table** - For very high volume, partition by `processed_at` or `timestamp`
+7. **Archive processed events** - Move old processed events to archive table to keep main table small
 
 ## Troubleshooting
 
@@ -1297,7 +1331,9 @@ interface Logger {
 **Debug:**
 
 ```typescript
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   logger: console, // Enable logging
 });
 ```
@@ -1427,7 +1463,7 @@ await messageQueue.publish("user.created", user); // 💥 Fails! User exists but
 **Trade-offs:**
 
 - Message queues: Lower latency (~10ms), higher throughput (10k+/s)
-- txob: Higher latency (~5s default), moderate throughput (10-100/s per processor)
+- txob: Tens of ms with wakeup signals (or `pollingIntervalMs`-bounded without), moderate throughput (10-100/s per processor)
 
 **Can I use txob WITH message queues?**
 
@@ -1571,7 +1607,9 @@ StripeCustomerCreated: {
 **If you absolutely must process events sequentially** (not recommended):
 
 ```typescript
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   maxEventConcurrency: 1, // Forces sequential processing
   // ⚠️ This sacrifices throughput and concurrency benefits
 });
@@ -1609,7 +1647,9 @@ txob surfaces failures while creating metric instruments during processor constr
 **2. Use the logger option:**
 
 ```typescript
-EventProcessor(client, handlers, {
+new EventProcessor({
+  client,
+  handlerMap: handlers,
   logger: myLogger, // Logs all processing activity
 });
 ```
@@ -1664,9 +1704,9 @@ const eventTypes = {
 type EventType = keyof typeof eventTypes;
 
 // TypeScript will enforce all event types have handlers
-const processor = EventProcessor<EventType>(
-  createProcessorClient<EventType>({ querier: client }),
-  {
+const processor = new EventProcessor<EventType>({
+  client: createProcessorClient<EventType>({ querier: client }),
+  handlerMap: {
     UserCreated: {
       /* handlers */
     },
@@ -1675,21 +1715,22 @@ const processor = EventProcessor<EventType>(
     },
     // Missing an event type? TypeScript error!
   },
-);
+});
 ```
 
 ### What's the performance impact?
 
 **Database Impact:**
 
-- One SELECT query per polling interval (default: every 5 seconds)
+- Without wakeup signals: one SELECT query per polling interval (default: every 5 seconds)
+- With wakeup signals: SELECTs are driven by inserts (throttled by `wakeupThrottleMs`); fallback poll only fires if no wakeup signal arrives within `wakeupTimeoutMs`
 - One SELECT + UPDATE per event processed
 - With proper indexes, queries are very fast (< 10ms typically)
 
 **Processing Latency:**
 
-- Average latency: `sleepTimeMs / 2` (default: 2.5 seconds)
-- Worst case: `sleepTimeMs` (default: 5 seconds)
+- With wakeup signals (Postgres NOTIFY / MongoDB Change Streams): typically tens of milliseconds — bounded by `wakeupThrottleMs` (default 1s) during bursts
+- Polling-only: average `pollingIntervalMs / 2` (~2.5s with the 5s default), worst case `pollingIntervalMs`
 
 **Throughput:**
 
@@ -1699,7 +1740,8 @@ const processor = EventProcessor<EventType>(
 
 **Optimization:**
 
-- Lower `sleepTimeMs` for lower latency (at cost of more queries)
+- Use a `wakeupEmitter` for low-latency processing without aggressive polling
+- Lower `pollingIntervalMs` for lower latency without wakeup signals (at cost of more queries)
 - Increase `maxEventConcurrency` for higher throughput
 - Run multiple processors for horizontal scaling
 
@@ -1763,11 +1805,12 @@ Add a `priority` column to your events table.
 - You're building **reliable background processing**
 - You want **simple infrastructure** (no separate message queue)
 - You need **horizontal scalability** without coordination
+- You want **near-realtime processing** without standing up extra infra — wakeup signals (Postgres NOTIFY / MongoDB Change Streams) deliver events within tens of ms while keeping ACID guarantees
 
 ### ⚠️ Consider alternatives when:
 
 - You need **exactly-once semantics** (use Kafka with transactions)
-- You need **real-time processing** (< 1 second latency) - use message queue
+- You need **hard real-time processing** (sub-10ms tail latency) - use message queue
 - You need **high throughput** (> 10k events/second) - use message queue
 - You already have **message queue infrastructure** you're happy with
 - You can't make handlers **idempotent**
@@ -1779,7 +1822,7 @@ Add a `priority` column to your events table.
 | ---------------------- | ---------------------- | ---------------- | ---------------- | --------------- |
 | Infrastructure         | Database only          | Separate service | Separate cluster | Managed service |
 | Consistency            | Strong (ACID)          | Eventual         | Eventual         | Eventual        |
-| Latency                | ~5s default            | ~10ms            | ~10ms            | ~1s             |
+| Latency                | ~10s of ms with wakeup signals, ~5s polling-only | ~10ms            | ~10ms            | ~1s             |
 | Throughput             | 10-100/s per processor | 10k+/s           | 100k+/s          | 3k/s            |
 | Horizontal scaling     | ✅ Yes                 | ✅ Yes           | ✅ Yes           | ✅ Yes          |
 | Exactly-once           | ❌ No                  | ❌ No            | ✅ Yes           | ❌ No           |
