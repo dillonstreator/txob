@@ -1537,8 +1537,8 @@ await messageQueue.publish("user.created", user); // 💥 Fails! User exists but
 
 **Trade-offs:**
 
-- Message queues: Lower latency (~10ms), higher throughput (10k+/s)
-- txob: Tens of ms with wakeup signals (or `pollingIntervalMs`-bounded without), moderate throughput (10-100/s per processor)
+- Message queues: Lower latency (~10ms), higher per-broker throughput (10k+/s) with dedicated buffering and fan-out primitives
+- txob: Tens of ms with wakeup signals (or `pollingIntervalMs`-bounded without). Per-processor throughput is 10-100/s typical, but scales near-linearly with processor count until the database write ceiling — production deployments can reach 1k-10k+/s on a single Postgres/MongoDB. Ultimate ceiling is handler efficiency and DB write capacity, same as any consumer.
 
 **Can I use txob WITH message queues?**
 
@@ -1809,9 +1809,11 @@ const processor = new EventProcessor<EventType>({
 
 **Throughput:**
 
-- Depends on handler speed and concurrency settings
-- Single processor: 10-100 events/second typical
-- Horizontally scalable: add more processors for higher throughput
+- Single processor: 10-100 events/second typical, primarily bounded by handler speed and `maxEventConcurrency`
+- Aggregate: scales near-linearly with processor count via `FOR UPDATE SKIP LOCKED` (Postgres) / per-document locking (MongoDB), no coordination required
+- Production deployments can reach **1k-10k+ events/second** on a single well-tuned Postgres/MongoDB
+- Ultimate ceilings are the same as any message-queue consumer: handler efficiency, downstream-system capacity, and database write throughput
+- Where message queues genuinely win: fan-out / pub-sub to many independent consumers, cross-region replication, and dedicated burst buffering — not raw single-stream throughput
 
 **Optimization:**
 
@@ -1886,7 +1888,8 @@ Add a `priority` column to your events table.
 
 - You need **exactly-once semantics** (use Kafka with transactions)
 - You need **hard real-time processing** (sub-10ms tail latency) - use message queue
-- You need **high throughput** (> 10k events/second) - use message queue
+- You need **fan-out / pub-sub** to many independent consumers - use message broker (txob handlers all run in the same processor process)
+- You need **sustained throughput beyond your database's write capacity** - use a dedicated message system
 - You already have **message queue infrastructure** you're happy with
 - You can't make handlers **idempotent**
 - You need **complex routing** or pub/sub patterns - use message broker
@@ -1898,7 +1901,7 @@ Add a `priority` column to your events table.
 | Infrastructure         | Database only          | Separate service | Separate cluster | Managed service |
 | Consistency            | Strong (ACID)          | Eventual         | Eventual         | Eventual        |
 | Latency                | ~10s of ms with wakeup signals, ~5s polling-only | ~10ms            | ~10ms            | ~1s             |
-| Throughput             | 10-100/s per processor | 10k+/s           | 100k+/s          | 3k/s            |
+| Throughput             | 10-100/s per processor; 1k-10k+/s aggregate (DB-bound) | 10k+/s           | 100k+/s          | 3k/s            |
 | Horizontal scaling     | ✅ Yes                 | ✅ Yes           | ✅ Yes           | ✅ Yes          |
 | Exactly-once           | ❌ No                  | ❌ No            | ✅ Yes           | ❌ No           |
 | Operational complexity | Low                    | Medium           | High             | Low             |
