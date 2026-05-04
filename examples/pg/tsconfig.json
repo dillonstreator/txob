@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["server.ts", "processor.ts"]
+  "include": ["server.ts", "processor.ts", "events.ts"]
 }

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { MongoClient, ObjectId, type ChangeStream } from "mongodb";
 import type {
+  TxOBEventDataMap,
   TxOBEvent,
   TxOBProcessorClient,
   TxOBProcessorClientOpts,
@@ -22,20 +23,28 @@ const createReadyToProcessFilter = (maxErrors: number) => ({
   errors: { $lt: maxErrors },
 });
 
-export type CreateProcessorClientOpts<EventType extends string> = {
+export type CreateProcessorClientOpts<
+  EventType extends string,
+  TEventDataMap extends TxOBEventDataMap<EventType> = TxOBEventDataMap<EventType>,
+> = {
   mongo: MongoClient;
   db: string;
   collection?: string;
   limit?: number;
 };
 
-export const createProcessorClient = <EventType extends string>(
-  opts: CreateProcessorClientOpts<EventType>,
-): TxOBProcessorClient<EventType> => {
+export const createProcessorClient = <
+  EventType extends string,
+  TEventDataMap extends TxOBEventDataMap<EventType> = TxOBEventDataMap<EventType>,
+>(
+  opts: CreateProcessorClientOpts<EventType, TEventDataMap>,
+): TxOBProcessorClient<EventType, TEventDataMap> => {
   const { mongo, db, collection = "events", limit = 100 } = opts;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
-  ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
+  ): Promise<
+    Pick<TxOBEvent<EventType, TEventDataMap[EventType]>, "id" | "errors">[]
+  > => {
     const filter = createReadyToProcessFilter(opts.maxErrors);
 
     const events = (await mongo
@@ -45,23 +54,26 @@ export const createProcessorClient = <EventType extends string>(
       .project({ id: 1, errors: 1 })
       .limit(limit)
       .sort("timestamp", "asc")
-      .toArray()) as Pick<TxOBEvent<EventType>, "id" | "errors">[];
+      .toArray()) as Pick<
+      TxOBEvent<EventType, TEventDataMap[EventType]>,
+      "id" | "errors"
+    >[];
 
     return events;
   };
 
-  const transaction: TxOBProcessorClient<EventType>["transaction"] = async (
+  const transaction: TxOBProcessorClient<EventType, TEventDataMap>["transaction"] = async (
     fn: (
-      txProcessorClient: TxOBTransactionProcessorClient<EventType>,
+      txProcessorClient: TxOBTransactionProcessorClient<EventType, TEventDataMap>,
     ) => Promise<void>,
   ): Promise<void> => {
     await mongo.withSession(async (session): Promise<void> => {
       await session.withTransaction(async (): Promise<void> => {
         await fn({
           getEventByIdForUpdateSkipLocked: async (
-            eventId: TxOBEvent<EventType>["id"],
+            eventId: TxOBEvent<EventType, TEventDataMap[EventType]>["id"],
             opts: TxOBProcessorClientOpts,
-          ): Promise<TxOBEvent<EventType> | null> => {
+          ): Promise<TxOBEvent<EventType, TEventDataMap[EventType]> | null> => {
             // https://www.mongodb.com/blog/post/how-to-select--for-update-inside-mongodb-transactions
             // Note: findOneAndUpdate returns null (not an error) when document not found,
             // so any thrown error is unexpected and will propagate to the transaction handler
@@ -94,9 +106,14 @@ export const createProcessorClient = <EventType extends string>(
 
             if (!result || !result.value) return null;
 
-            return result.value as TxOBEvent<EventType>;
+            return result.value as TxOBEvent<
+              EventType,
+              TEventDataMap[EventType]
+            >;
           },
-          updateEvent: async (event: TxOBEvent<EventType>): Promise<void> => {
+          updateEvent: async (
+            event: TxOBEvent<EventType, TEventDataMap[EventType]>,
+          ): Promise<void> => {
             await mongo
               .db(db)
               .collection(collection)
@@ -119,7 +136,10 @@ export const createProcessorClient = <EventType extends string>(
               );
           },
           createEvent: async (
-            event: Omit<TxOBEvent<EventType>, "processed_at" | "backoff_until">,
+            event: Omit<
+              TxOBEvent<EventType, TEventDataMap[EventType]>,
+              "processed_at" | "backoff_until"
+            >,
           ): Promise<void> => {
             await mongo.db(db).collection(collection).insertOne(
               {

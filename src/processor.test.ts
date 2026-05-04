@@ -1,5 +1,12 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { EventProcessor, TxOBEvent, defaultBackoff } from "./processor.js";
+import { describe, it, expect, vi, afterEach, expectTypeOf } from "vitest";
+import type { StandardSchemaV1 } from "@standard-schema/spec";
+import {
+  defineTxOBEventHandlerMap,
+  defineTxOBEventSchemas,
+  EventProcessor,
+  TxOBEvent,
+  defaultBackoff,
+} from "./processor.js";
 import { TxOBError, ErrorUnprocessableEventHandler } from "./error.js";
 import { sleep } from "./sleep.js";
 import {
@@ -31,6 +38,53 @@ vi.mock("./date", async (getOg) => {
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe("EventProcessor - schema typing", () => {
+  it("infers handler event data from Standard Schema outputs", () => {
+    const createSchema = <TOutput extends Record<string, unknown>>(): StandardSchemaV1<
+      unknown,
+      TOutput
+    > => ({
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate: (value) => ({ value: value as TOutput }),
+      },
+    });
+
+    const eventSchemas = defineTxOBEventSchemas({
+      UserCreated: createSchema<{ userId: string; email: string }>(),
+      SubscriptionCancelled: createSchema<{
+        subscriptionId: string;
+        reason?: string;
+      }>(),
+    });
+
+    const handlerMap = defineTxOBEventHandlerMap(eventSchemas, {
+      UserCreated: {
+        sendWelcomeEmail: async (event) => {
+          expectTypeOf(event.type).toEqualTypeOf<"UserCreated">();
+          expectTypeOf(event.data).toEqualTypeOf<{
+            userId: string;
+            email: string;
+          }>();
+        },
+      },
+      SubscriptionCancelled: {
+        syncBilling: async (event) => {
+          expectTypeOf(event.type).toEqualTypeOf<"SubscriptionCancelled">();
+          expectTypeOf(event.data).toEqualTypeOf<{
+            subscriptionId: string;
+            reason?: string;
+          }>();
+        },
+      },
+    });
+
+    expectTypeOf(handlerMap.UserCreated.sendWelcomeEmail).toBeFunction();
+    expectTypeOf(handlerMap.SubscriptionCancelled.syncBilling).toBeFunction();
+  });
 });
 
 describe("EventProcessor - processEvents", () => {

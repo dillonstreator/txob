@@ -5,14 +5,8 @@ import { resolve } from "node:path";
 import pg from "pg";
 import dotenv from "dotenv";
 import gracefulShutdown from "http-graceful-shutdown";
+import { eventSchemas, eventTypes } from "./events.js";
 dotenv.config();
-
-export const eventTypes = {
-  ResourceSaved: "ResourceSaved",
-  EventMaxErrorsReached: "EventMaxErrorsReached",
-} as const;
-
-export type EventType = keyof typeof eventTypes;
 
 export async function migrate(client: pg.Client): Promise<void> {
   await client.query(`CREATE TABLE IF NOT EXISTS events (
@@ -52,9 +46,9 @@ export async function migrate(client: pg.Client): Promise<void> {
 
 const main = async (): Promise<void> => {
   const client = new pg.Client({
-    user: process.env.POSTGRES_USER,
-    password: process.env.POSTGRES_PASSWORD,
-    database: process.env.POSTGRES_DB,
+    user: process.env.POSTGRES_USER || 'outbox',
+    password: process.env.POSTGRES_PASSWORD || 'outbox',
+    database: process.env.POSTGRES_DB || 'outbox',
     port: parseInt(process.env.POSTGRES_PORT || "5434"),
   });
   await client.connect();
@@ -86,10 +80,10 @@ const main = async (): Promise<void> => {
         [
           randomUUID(),
           eventTypes.ResourceSaved,
-          {
+          eventSchemas.ResourceSaved.parse({
             type: "activity",
             id: activityId,
-          },
+          }),
           correlationId,
           {},
           0,

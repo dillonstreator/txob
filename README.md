@@ -301,11 +301,11 @@ For a detailed architecture diagram, see [architecture.mmd](./architecture.mmd).
 Every event in txob follows this structure:
 
 ```typescript
-interface TxOBEvent<EventType extends string> {
+interface TxOBEvent<EventType extends string, EventData = Record<string, unknown>> {
   id: string; // Unique event identifier (UUID recommended)
   timestamp: Date; // When the event was created
   type: EventType; // Event type (e.g., "UserCreated", "OrderPlaced")
-  data: Record<string, unknown>; // Event payload - your custom data
+  data: EventData; // Event payload - can be strongly typed per event type
   correlation_id: string; // For tracing requests across services
   handler_results: Record<string, TxOBEventHandlerResult>; // Results from each handler
   errors: number; // Number of processing attempts
@@ -326,8 +326,11 @@ interface TxOBEvent<EventType extends string> {
 Handlers are async functions that execute your side-effects:
 
 ```typescript
-type TxOBEventHandler = (
-  event: TxOBEvent,
+type TxOBEventHandler<
+  EventType extends string = string,
+  EventData = Record<string, unknown>,
+> = (
+  event: TxOBEvent<EventType, EventData>,
   opts: { signal?: AbortSignal },
 ) => Promise<void>;
 ```
@@ -348,6 +351,54 @@ const incrementCounter: TxOBEventHandler = async (event) => {
   await db.query("UPDATE counters SET count = count + 1"); // Will increment multiple times!
 };
 ```
+
+#### Typed payloads with Standard Schema (Zod/ArkType/Valibot/etc.)
+
+txob supports schema-driven event payload typing through the Standard Schema interface.
+
+```typescript
+import { z } from "zod";
+import {
+  defineTxOBEventHandlerMap,
+  defineTxOBEventSchemas,
+  EventProcessor,
+  type TxOBEventDataMapFromSchemas,
+} from "txob";
+
+const eventSchemas = defineTxOBEventSchemas({
+  UserCreated: z.object({
+    userId: z.string().uuid(),
+    email: z.string().email(),
+  }),
+  OrderPlaced: z.object({
+    orderId: z.string().uuid(),
+    amount: z.number().positive(),
+  }),
+});
+
+type EventType = keyof typeof eventSchemas;
+type EventDataMap = TxOBEventDataMapFromSchemas<typeof eventSchemas>;
+
+const handlers = defineTxOBEventHandlerMap(eventSchemas, {
+  UserCreated: {
+    sendWelcomeEmail: async (event) => {
+      await emailService.send(event.data.email); // typed as string
+    },
+  },
+  OrderPlaced: {
+    sendReceipt: async (event) => {
+      await receipts.send(event.data.orderId, event.data.amount); // strongly typed
+    },
+  },
+});
+
+const processor = new EventProcessor<EventType, EventDataMap>({
+  client: createProcessorClient<EventType, EventDataMap>({ querier: client }),
+  handlerMap: handlers,
+});
+```
+
+`defineTxOBEventSchemas(...)` is optional. It is a convenience helper for cleaner type inference. You can also define schema maps without it using explicit types.
 
 ### Handler Results
 
@@ -1233,11 +1284,11 @@ If the database is not configured for Change Streams, an error will be emitted v
 
 ```typescript
 // Main event type
-type TxOBEvent<EventType extends string> = {
+type TxOBEvent<EventType extends string, EventData = Record<string, unknown>> = {
   id: string;
   timestamp: Date;
   type: EventType;
-  data: Record<string, unknown>;
+  data: EventData;
   correlation_id: string;
   handler_results: Record<string, TxOBEventHandlerResult>;
   errors: number;
@@ -1246,16 +1297,30 @@ type TxOBEvent<EventType extends string> = {
 };
 
 // Handler function signature
-type TxOBEventHandler = (
-  event: TxOBEvent,
+type TxOBEventHandler<
+  EventType extends string = string,
+  EventData = Record<string, unknown>,
+> = (
+  event: TxOBEvent<EventType, EventData>,
   opts: { signal?: AbortSignal },
 ) => Promise<void>;
 
 // Handler map structure
-type TxOBEventHandlerMap<EventType extends string> = Record<
+type TxOBEventDataMap<EventType extends string> = Record<
   EventType,
-  Record<string, TxOBEventHandler>
+  Record<string, unknown>
 >;
+type TxOBEventHandlerMap<
+  EventType extends string,
+  EventDataMap extends TxOBEventDataMap<EventType>,
+> = {
+  [TType in EventType]: Record<string, TxOBEventHandler<TType, EventDataMap[TType]>>;
+};
+
+// Standard Schema helpers
+type TxOBEventDataMapFromSchemas<TSchemas> = {
+  [TType in keyof TSchemas & string]: /* schema output for TType */;
+};
 
 // Handler result tracking
 type TxOBEventHandlerResult = {
@@ -1767,29 +1832,41 @@ onEventMaxErrorsReached: async ({ event, txClient }) => {
 
 ### Can I use this with TypeScript?
 
-Yes! txob is written in TypeScript and provides full type safety:
+Yes! txob is written in TypeScript and provides full type safety, including typed event payloads:
 
 ```typescript
-// Define your event types
-const eventTypes = {
-  UserCreated: "UserCreated",
-  OrderPlaced: "OrderPlaced",
-} as const;
+import { z } from "zod";
+import {
+  defineTxOBEventHandlerMap,
+  defineTxOBEventSchemas,
+  type TxOBEventDataMapFromSchemas,
+} from "txob";
 
-type EventType = keyof typeof eventTypes;
+const eventSchemas = defineTxOBEventSchemas({
+  UserCreated: z.object({ userId: z.string().uuid(), email: z.string().email() }),
+  OrderPlaced: z.object({ orderId: z.string().uuid(), amount: z.number() }),
+});
 
-// TypeScript will enforce all event types have handlers
-const processor = new EventProcessor<EventType>({
-  client: createProcessorClient<EventType>({ querier: client }),
-  handlerMap: {
-    UserCreated: {
-      /* handlers */
+type EventType = keyof typeof eventSchemas;
+type EventDataMap = TxOBEventDataMapFromSchemas<typeof eventSchemas>;
+
+const handlers = defineTxOBEventHandlerMap(eventSchemas, {
+  UserCreated: {
+    sendWelcomeEmail: async (event) => {
+      event.data.email; // string
     },
-    OrderPlaced: {
-      /* handlers */
-    },
-    // Missing an event type? TypeScript error!
   },
+  OrderPlaced: {
+    sendReceipt: async (event) => {
+      event.data.amount; // number
+    },
+  },
+  // Missing an event type? TypeScript error
+});
+
+const processor = new EventProcessor<EventType, EventDataMap>({
+  client: createProcessorClient<EventType, EventDataMap>({ querier: client }),
+  handlerMap: handlers,
 });
 ```
 
