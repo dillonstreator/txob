@@ -5,7 +5,7 @@
     <img src="https://codecov.io/gh/osbytes/txob/graph/badge.svg?token=E9M7G67VLL"/>
   </a>
   <a aria-label="NPM version" href="https://www.npmjs.com/package/txob">
-    <img alt="" src="https://badgen.net/npm/v/txob?v=0.3.1">
+    <img alt="" src="https://badgen.net/npm/v/txob?v=0.4.0">
   </a>
   <a aria-label="License" href="https://github.com/osbytes/txob/blob/main/LICENSE">
     <img alt="" src="https://badgen.net/npm/license/txob">
