@@ -213,6 +213,48 @@ describe("transaction", () => {
   });
 
   describe("rollback failure", () => {
+    it("should stringify rollback failure when rollback error is not an Error", async () => {
+      const transactionError = new Error("transaction failed");
+      const pgClient = {
+        query: vi.fn<any>((sql: string) => {
+          if (sql === "BEGIN") return Promise.resolve();
+          if (sql === "ROLLBACK") return Promise.reject("not an Error instance");
+          return Promise.resolve();
+        }),
+      } as any;
+
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
+
+      await expect(
+        client.transaction(async () => {
+          throw transactionError;
+        }),
+      ).rejects.toThrow(
+        "Transaction failed: transaction failed (rollback also failed: not an Error instance)",
+      );
+    });
+
+    it("should stringify transaction failure when it is not an Error", async () => {
+      const pgClient = {
+        query: vi.fn<any>((sql: string) => {
+          if (sql === "BEGIN") return Promise.resolve();
+          if (sql === "ROLLBACK")
+            return Promise.reject(new Error("rollback failed"));
+          return Promise.resolve();
+        }),
+      } as any;
+
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
+
+      await expect(
+        client.transaction(async () => {
+          throw "string txn failure" as never;
+        }),
+      ).rejects.toThrow(
+        "Transaction failed: string txn failure (rollback also failed: rollback failed)",
+      );
+    });
+
     it("should throw combined error when both transaction and rollback fail", async () => {
       const transactionError = new Error("transaction failed");
       const rollbackError = new Error("rollback failed");

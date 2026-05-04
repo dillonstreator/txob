@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, expectTypeOf } from "vitest";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import {
   createEventHandlerMap,
+  createEventProcessor,
   EventProcessor,
   TxOBEvent,
   defaultBackoff,
@@ -37,6 +38,36 @@ vi.mock("./date", async (getOg) => {
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe("createEventProcessor", () => {
+  it("returns an EventProcessor wired with the same options", async () => {
+    const handlerMap = {
+      evtType1: { h1: vi.fn(() => Promise.resolve()) },
+    };
+    mockClient.getEventsToProcess.mockResolvedValue([]);
+
+    const processor = createEventProcessor({
+      client: mockClient,
+      handlerMap,
+      pollingIntervalMs: 10,
+      eventSchemas: {
+        evtType1: {
+          "~standard": {
+            version: 1,
+            vendor: "test",
+            validate: (value) => ({ value: value as Record<string, unknown> }),
+          },
+        },
+      },
+    });
+
+    expect(processor).toBeInstanceOf(EventProcessor);
+    processor.start();
+    await sleep(30);
+    await processor.stop();
+    expect(mockClient.getEventsToProcess).toHaveBeenCalled();
+  });
 });
 
 describe("EventProcessor - schema typing", () => {
