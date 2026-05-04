@@ -169,10 +169,23 @@ export interface TxOBTransactionProcessorClient<
   ): Promise<void>;
 }
 
-export const defaultBackoff = (errorCount: number): Date => {
+export type TxOBBackoffContext<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
+> = {
+  attempt: number;
+  error?: unknown;
+  errors: readonly unknown[];
+  event: Readonly<TxOBEventByType<TxOBEventType, TEventDataMap>>;
+  maxErrors: number;
+};
+
+export const defaultBackoff = ({
+  attempt,
+}: TxOBBackoffContext<string>): Date => {
   const baseDelayMs = 1000;
   const maxDelayMs = 1000 * 60;
-  const backoffMs = Math.min(baseDelayMs * 2 ** errorCount, maxDelayMs);
+  const backoffMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
   const retryTimestamp = new Date(Date.now() + backoffMs);
 
   return retryTimestamp;
@@ -190,7 +203,7 @@ type TxOBProcessEventsOpts<
   TEventDataMap extends TxOBEventDataMap<TxOBEventType>,
 > = {
   maxErrors: number;
-  backoff: (count: number) => Date;
+  backoff: (context: TxOBBackoffContext<TxOBEventType, TEventDataMap>) => Date;
   signal?: AbortSignal;
   logger?: Logger;
   maxEventConcurrency?: number;
@@ -353,6 +366,8 @@ const processEvent = async <
       );
 
       const backoffs: Date[] = [];
+      const backoffErrors: unknown[] = [];
+      let latestBackoffError: unknown;
 
       const handlerLimit = pLimit(maxHandlerConcurrency);
       await Promise.allSettled(
@@ -430,6 +445,8 @@ const processEvent = async <
               );
             } catch (error) {
               handlerError = error;
+              latestBackoffError = error;
+              backoffErrors.push(error);
               logger?.error(
                 {
                   eventId: lockedEvent.id,
@@ -508,7 +525,18 @@ const processEvent = async <
 
       if (errored) {
         lockedEvent.errors = Math.min(lockedEvent.errors + 1, maxErrors);
-        backoffs.push(backoff(lockedEvent.errors));
+        const backoffContext: TxOBBackoffContext<TxOBEventType, TEventDataMap> = {
+          attempt: lockedEvent.errors,
+          error: latestBackoffError,
+          errors: backoffErrors,
+          event: deepClone(lockedEvent) as Readonly<
+            TxOBEventByType<TxOBEventType, TEventDataMap>
+          >,
+          maxErrors,
+        };
+        backoffs.push(
+          backoff(backoffContext),
+        );
         const latestBackoff = backoffs.sort(
           (a, b) => b.getTime() - a.getTime(),
         )[0];

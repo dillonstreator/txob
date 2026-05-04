@@ -220,7 +220,18 @@ describe("EventProcessor - processEvents", () => {
     );
 
     expect(opts.backoff).toHaveBeenCalledOnce();
-    expect(opts.backoff).toHaveBeenCalledWith(5); // evt.errors + 1
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 5,
+        error: err,
+        errors: expect.arrayContaining([err]),
+        event: expect.objectContaining({
+          id: "1",
+          errors: 5,
+        }),
+        maxErrors: opts.maxErrors,
+      }),
+    ); // evt.errors + 1
 
     expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
     expect(mockTxClient.updateEvent).toHaveBeenCalledWith({
@@ -525,7 +536,12 @@ describe("EventProcessor - processEvents", () => {
 
     // Backoff is called even when reaching maxErrors (then backoff_until is nulled)
     expect(opts.backoff).toHaveBeenCalledOnce();
-    expect(opts.backoff).toHaveBeenCalledWith(opts.maxErrors);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: opts.maxErrors,
+        maxErrors: opts.maxErrors,
+      }),
+    );
 
     // Should call the maxErrors callback
     expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
@@ -623,7 +639,12 @@ describe("EventProcessor - processEvents", () => {
     expect(handlerMap.evtType1.handler2).toHaveBeenCalledOnce();
 
     // Should call backoff even when jumping to maxErrors
-    expect(opts.backoff).toHaveBeenCalledWith(opts.maxErrors);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: opts.maxErrors,
+        maxErrors: opts.maxErrors,
+      }),
+    );
 
     // Should call the maxErrors callback since all remaining handlers are unprocessable
     expect(opts.onEventMaxErrorsReached).toHaveBeenCalledOnce();
@@ -711,7 +732,13 @@ describe("EventProcessor - processEvents", () => {
     expect(handlerMap.evtType1.handler3).toHaveBeenCalledOnce();
 
     // Should call backoff normally since handler3 has retryable error
-    expect(opts.backoff).toHaveBeenCalledWith(1);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        error: retryableError,
+        errors: expect.arrayContaining([retryableError]),
+      }),
+    );
 
     // Should NOT call the maxErrors callback since errors < maxErrors
     expect(opts.onEventMaxErrorsReached).not.toHaveBeenCalled();
@@ -888,7 +915,12 @@ describe("EventProcessor - processEvents", () => {
     expect(handlerMap.evtType1.handler3).toHaveBeenCalledOnce();
 
     // Default backoff should also be called
-    expect(opts.backoff).toHaveBeenCalledWith(1);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        maxErrors: opts.maxErrors,
+      }),
+    );
 
     // The latest backoff (backoff2 = 20 seconds) should be used
     expect(mockTxClient.updateEvent).toHaveBeenCalledTimes(1);
@@ -950,7 +982,13 @@ describe("EventProcessor - processEvents", () => {
     await processor.stop();
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(1);
-    expect(opts.backoff).toHaveBeenCalledWith(1);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        error,
+        errors: expect.arrayContaining([error]),
+      }),
+    );
 
     // The latest backoff (laterBackoff = 30 seconds) should be used, not the default (5 seconds)
     const updateCall = mockTxClient.updateEvent.mock.calls[0][0];
@@ -1013,7 +1051,13 @@ describe("EventProcessor - processEvents", () => {
     await processor.stop();
 
     expect(mockClient.transaction).toHaveBeenCalledTimes(1);
-    expect(opts.backoff).toHaveBeenCalledWith(1);
+    expect(opts.backoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        error,
+        errors: expect.arrayContaining([error]),
+      }),
+    );
 
     // The latest backoff (defaultBackoffTime = 5 seconds) should be used, not the earlier one (2 seconds)
     const updateCall = mockTxClient.updateEvent.mock.calls[0][0];
@@ -1026,7 +1070,21 @@ describe("EventProcessor - processEvents", () => {
 
 describe("defaultBackoff", () => {
   it("should calculate a backoff", () => {
-    const backoff = defaultBackoff(3);
+    const backoff = defaultBackoff({
+      attempt: 3,
+      error: new Error("test"),
+      errors: [],
+      event: {
+        id: "event-1",
+        type: "evtType1",
+        timestamp: now,
+        data: {},
+        correlation_id: "abc123",
+        handler_results: {},
+        errors: 3,
+      },
+      maxErrors: 5,
+    });
     const actual = backoff.getTime();
     const expected = Date.now() + 1000 * 2 ** 3;
     const diff = Math.abs(actual - expected);
@@ -1036,7 +1094,21 @@ describe("defaultBackoff", () => {
 
   it("should cap backoff at maxDelayMs for large error counts", () => {
     const maxDelayMs = 1000 * 60; // 60 seconds
-    const backoff = defaultBackoff(20); // Large error count that would exceed max
+    const backoff = defaultBackoff({
+      attempt: 20,
+      error: new Error("test"),
+      errors: [],
+      event: {
+        id: "event-1",
+        type: "evtType1",
+        timestamp: now,
+        data: {},
+        correlation_id: "abc123",
+        handler_results: {},
+        errors: 20,
+      },
+      maxErrors: 30,
+    }); // Large error count that would exceed max
     const actual = backoff.getTime();
     const expected = Date.now() + maxDelayMs;
     const diff = Math.abs(actual - expected);

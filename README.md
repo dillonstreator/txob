@@ -454,9 +454,11 @@ new EventProcessor({
   client,
   handlerMap: handlers,
   maxErrors: 5, // Retry up to 5 times
-  backoff: (errorCount) => {
+  backoff: ({ attempt, error, event, errors, maxErrors }) => {
     // Custom backoff strategy
-    const delayMs = 1000 * 2 ** errorCount; // Exponential: 1s, 2s, 4s, 8s, 16s
+    // error is the latest handler error, errors contains all handler errors for this attempt
+    // event is the event snapshot after this attempt's handlers finished
+    const delayMs = 1000 * 2 ** attempt; // Exponential: 1s, 2s, 4s, 8s, 16s
     return new Date(Date.now() + delayMs);
   },
 });
@@ -747,10 +749,10 @@ new EventProcessor({
   maxErrors: 5,
 
   // Backoff calculation function (default: exponential backoff capped at 60s)
-  backoff: (errorCount: number): Date => {
+  backoff: ({ attempt, error, event, errors, maxErrors }): Date => {
     const baseDelayMs = 1000;
     const maxDelayMs = 60000;
-    const backoffMs = Math.min(baseDelayMs * 2 ** errorCount, maxDelayMs);
+    const backoffMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
     return new Date(Date.now() + backoffMs);
   },
 
@@ -1005,8 +1007,8 @@ const processor = new EventProcessor({
 
 ```typescript
 // Linear backoff: 5s, 10s, 15s, 20s, 25s
-const linearBackoff = (errorCount: number): Date => {
-  const delayMs = 5000 * errorCount;
+const linearBackoff = ({ attempt }): Date => {
+  const delayMs = 5000 * attempt;
   return new Date(Date.now() + delayMs);
 };
 
@@ -1018,8 +1020,8 @@ const fixedBackoff = (): Date => {
 // Fibonacci backoff: 1s, 1s, 2s, 3s, 5s, 8s, 13s...
 const fibonacciBackoff = (() => {
   const fib = (n: number): number => (n <= 1 ? 1 : fib(n - 1) + fib(n - 2));
-  return (errorCount: number): Date => {
-    const delayMs = fib(errorCount) * 1000;
+  return ({ attempt }): Date => {
+    const delayMs = fib(attempt) * 1000;
     return new Date(Date.now() + delayMs);
   };
 })();
