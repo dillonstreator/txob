@@ -58,6 +58,7 @@
     "format": "prettier -w ."
   },
   "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
     "p-limit": "^7.2.0",
     "p-queue": "^9.0.1",
     "throttle-debounce": "^5.0.2"

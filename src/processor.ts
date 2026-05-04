@@ -5,6 +5,7 @@ import { deepClone } from "./clone.js";
 import PQueue from "p-queue";
 import { ErrorUnprocessableEventHandler, TxOBError } from "./error.js";
 import { throttle } from "throttle-debounce";
+import type { StandardSchemaV1 } from "@standard-schema/spec";
 import {
   createTelemetryInstruments,
   endTelemetrySpan,
@@ -29,11 +30,13 @@ type TxOBEventHandlerResult = {
   errors?: { error: unknown; timestamp: Date }[];
 };
 
-export type TxOBEvent<TxOBEventType extends string> = {
+export type TxOBEventData = Record<string, unknown>;
+
+export type TxOBEvent<TxOBEventType extends string, TData = TxOBEventData> = {
   id: string;
   timestamp: Date;
   type: TxOBEventType;
-  data: Record<string, unknown>;
+  data: TData;
   correlation_id: string;
   handler_results: Record<string, TxOBEventHandlerResult>;
   errors: number;
@@ -41,21 +44,88 @@ export type TxOBEvent<TxOBEventType extends string> = {
   processed_at?: Date;
 };
 
+export type TxOBEventDataMap<TxOBEventType extends string> = Record<
+  TxOBEventType,
+  TxOBEventData
+>;
+
+type TxOBEventByType<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType>,
+> = {
+  [TType in TxOBEventType]: TxOBEvent<TType, TEventDataMap[TType]>;
+}[TxOBEventType];
+
+export type TxOBStandardSchema = StandardSchemaV1<unknown, TxOBEventData>;
+
+export type TxOBEventSchemaMap<TxOBEventType extends string> = Record<
+  TxOBEventType,
+  TxOBStandardSchema
+>;
+
+export type TxOBSchemaOutput<TSchema extends TxOBStandardSchema> =
+  TSchema extends StandardSchemaV1<unknown, infer TOutput> ? TOutput : never;
+
+type TxOBEventDataMapFromSchemas<
+  TEventSchemas extends TxOBEventSchemaMap<string>,
+> = {
+  [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
+};
+
+type TxOBEventHandlerMapFromSchemas<
+  TEventSchemas extends TxOBEventSchemaMap<string>,
+> = TxOBEventHandlerMap<
+  keyof TEventSchemas & string,
+  TxOBEventDataMapFromSchemas<TEventSchemas>
+>;
+
+type TxOBEventTypeFromSchemas<TEventSchemas extends TxOBEventSchemaMap<string>> =
+  keyof TEventSchemas & string;
+
 type TxOBEventHandlerOpts = {
   signal?: AbortSignal;
 };
 
-export type TxOBEventHandler = <TxOBEventType extends string>(
-  event: TxOBEvent<TxOBEventType>,
+export type TxOBEventHandler<
+  TxOBEventType extends string = string,
+  TData = TxOBEventData,
+> = (
+  event: TxOBEvent<TxOBEventType, TData>,
   opts: TxOBEventHandlerOpts,
 ) => Promise<void>;
 
-export type TxOBEventHandlerMap<TxOBEventType extends string> = Record<
-  TxOBEventType,
-  {
-    [key: string]: TxOBEventHandler;
-  }
->;
+export type TxOBEventHandlerMap<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
+> = {
+  [TType in TxOBEventType]: {
+    [key: string]: TxOBEventHandler<TType, TEventDataMap[TType]>;
+  };
+};
+
+export type CreateEventProcessorOptsFromSchemas<
+  TEventSchemas extends TxOBEventSchemaMap<string>,
+> = Omit<
+  Partial<
+    TxOBProcessEventsOpts<
+      TxOBEventTypeFromSchemas<TEventSchemas>,
+      TxOBEventDataMapFromSchemas<TEventSchemas>
+    >
+  >,
+  "signal" | "telemetry"
+> & {
+  pollingIntervalMs?: number;
+  wakeupTimeoutMs?: number;
+  wakeupThrottleMs?: number;
+  wakeupEmitter?: WakeupEmitter;
+  telemetry?: TxOBTelemetry;
+  eventSchemas: TEventSchemas;
+  client: TxOBProcessorClient<
+    TxOBEventTypeFromSchemas<TEventSchemas>,
+    TxOBEventDataMapFromSchemas<TEventSchemas>
+  >;
+  handlerMap: TxOBEventHandlerMapFromSchemas<TEventSchemas>;
+};
 
 export type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
@@ -68,25 +138,34 @@ export interface WakeupEmitter {
   close(): Promise<void>;
 }
 
-export interface TxOBProcessorClient<TxOBEventType extends string> {
+export interface TxOBProcessorClient<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
+> {
   getEventsToProcess(
     opts: TxOBProcessorClientOpts,
-  ): Promise<Pick<TxOBEvent<TxOBEventType>, "id" | "errors">[]>;
+  ): Promise<Pick<TxOBEventByType<TxOBEventType, TEventDataMap>, "id" | "errors">[]>;
   transaction(
     fn: (
-      txProcessorClient: TxOBTransactionProcessorClient<TxOBEventType>,
+      txProcessorClient: TxOBTransactionProcessorClient<TxOBEventType, TEventDataMap>,
     ) => Promise<void>,
   ): Promise<void>;
 }
 
-export interface TxOBTransactionProcessorClient<TxOBEventType extends string> {
+export interface TxOBTransactionProcessorClient<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
+> {
   getEventByIdForUpdateSkipLocked(
-    eventId: TxOBEvent<TxOBEventType>["id"],
+    eventId: TxOBEventByType<TxOBEventType, TEventDataMap>["id"],
     opts: TxOBProcessorClientOpts,
-  ): Promise<TxOBEvent<TxOBEventType> | null>;
-  updateEvent(event: TxOBEvent<TxOBEventType>): Promise<void>;
+  ): Promise<TxOBEventByType<TxOBEventType, TEventDataMap> | null>;
+  updateEvent(event: TxOBEventByType<TxOBEventType, TEventDataMap>): Promise<void>;
   createEvent(
-    event: Omit<TxOBEvent<TxOBEventType>, "processed_at" | "backoff_until">,
+    event: Omit<
+      TxOBEventByType<TxOBEventType, TEventDataMap>,
+      "processed_at" | "backoff_until"
+    >,
   ): Promise<void>;
 }
 
@@ -106,7 +185,10 @@ const defaultMaxQueuedEvents = 500;
 const defaultWakeupTimeoutMs = 60_000;
 const defaultWakeupThrottleMs = 1_000;
 
-type TxOBProcessEventsOpts<TxOBEventType extends string> = {
+type TxOBProcessEventsOpts<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType>,
+> = {
   maxErrors: number;
   backoff: (count: number) => Date;
   signal?: AbortSignal;
@@ -115,23 +197,26 @@ type TxOBProcessEventsOpts<TxOBEventType extends string> = {
   maxHandlerConcurrency?: number;
   maxQueuedEvents?: number;
   onEventMaxErrorsReached?: (opts: {
-    event: Readonly<TxOBEvent<TxOBEventType>>;
-    txClient: TxOBTransactionProcessorClient<TxOBEventType>;
+    event: Readonly<TxOBEventByType<TxOBEventType, TEventDataMap>>;
+    txClient: TxOBTransactionProcessorClient<TxOBEventType, TEventDataMap>;
     signal?: AbortSignal;
   }) => Promise<void>;
   telemetry?: TxOBTelemetryInstruments;
 };
 
-const processEvent = async <TxOBEventType extends string>({
+const processEvent = async <
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType>,
+>({
   client,
   handlerMap,
   unlockedEvent,
   opts,
 }: {
-  client: TxOBProcessorClient<TxOBEventType>;
-  handlerMap: TxOBEventHandlerMap<TxOBEventType>;
-  unlockedEvent: Pick<TxOBEvent<TxOBEventType>, "id" | "errors">;
-  opts?: Partial<TxOBProcessEventsOpts<TxOBEventType>>;
+  client: TxOBProcessorClient<TxOBEventType, TEventDataMap>;
+  handlerMap: TxOBEventHandlerMap<TxOBEventType, TEventDataMap>;
+  unlockedEvent: Pick<TxOBEventByType<TxOBEventType, TEventDataMap>, "id" | "errors">;
+  opts?: Partial<TxOBProcessEventsOpts<TxOBEventType, TEventDataMap>>;
 }): Promise<{ backoffUntil?: Date }> => {
   const {
     logger,
@@ -435,7 +520,9 @@ const processEvent = async <TxOBEventType extends string>({
           if (onEventMaxErrorsReached) {
             try {
               await onEventMaxErrorsReached({
-                event: deepClone(lockedEvent),
+                event: deepClone(lockedEvent) as Readonly<
+                  TxOBEventByType<TxOBEventType, TEventDataMap>
+                >,
                 txClient,
                 signal,
               });
@@ -506,10 +593,18 @@ export interface Logger {
   error(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
-export class EventProcessor<TxOBEventType extends string> {
-  private client: TxOBProcessorClient<TxOBEventType>;
-  private handlerMap: TxOBEventHandlerMap<TxOBEventType>;
-  private opts: Omit<TxOBProcessEventsOpts<TxOBEventType>, "signal"> & {
+export interface TxOBProcessor {
+  start(): void;
+  stop(opts?: { timeoutMs?: number }): Promise<void>;
+}
+
+export class EventProcessor<
+  TxOBEventType extends string,
+  TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
+> implements TxOBProcessor {
+  private client: TxOBProcessorClient<TxOBEventType, TEventDataMap>;
+  private handlerMap: TxOBEventHandlerMap<TxOBEventType, TEventDataMap>;
+  private opts: Omit<TxOBProcessEventsOpts<TxOBEventType, TEventDataMap>, "signal"> & {
     pollingIntervalMs: number;
     maxQueuedEvents: number;
     wakeupTimeoutMs: number;
@@ -531,7 +626,7 @@ export class EventProcessor<TxOBEventType extends string> {
     telemetry,
     ...opts
   }: Omit<
-    Partial<TxOBProcessEventsOpts<TxOBEventType>>,
+    Partial<TxOBProcessEventsOpts<TxOBEventType, TEventDataMap>>,
     "signal" | "telemetry"
   > & {
     pollingIntervalMs?: number;
@@ -540,8 +635,8 @@ export class EventProcessor<TxOBEventType extends string> {
     wakeupEmitter?: WakeupEmitter;
     telemetry?: TxOBTelemetry;
   } & {
-    client: TxOBProcessorClient<TxOBEventType>;
-    handlerMap: TxOBEventHandlerMap<TxOBEventType>;
+    client: TxOBProcessorClient<TxOBEventType, TEventDataMap>;
+    handlerMap: TxOBEventHandlerMap<TxOBEventType, TEventDataMap>;
   }) {
     const _opts = {
       pollingIntervalMs: defaultPollingIntervalMs,
@@ -645,7 +740,10 @@ export class EventProcessor<TxOBEventType extends string> {
             .add(
               async () => {
                 try {
-                  const { backoffUntil } = await processEvent<TxOBEventType>({
+                  const { backoffUntil } = await processEvent<
+                    TxOBEventType,
+                    TEventDataMap
+                  >({
                     client: this.client,
                     handlerMap: this.handlerMap,
                     unlockedEvent: event,
@@ -860,3 +958,27 @@ export class EventProcessor<TxOBEventType extends string> {
     }
   }
 }
+
+export const createEventProcessor = <
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
+>(
+  opts: CreateEventProcessorOptsFromSchemas<TEventSchemas>,
+): EventProcessor<
+  TxOBEventTypeFromSchemas<TEventSchemas>,
+  TxOBEventDataMapFromSchemas<TEventSchemas>
+> => {
+  const { eventSchemas: _eventSchemas, ...processorOpts } = opts;
+  return new EventProcessor(processorOpts);
+};
+
+export const createEventHandlerMap = <
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
+>(
+  opts: {
+    eventSchemas: TEventSchemas;
+    handlerMap: TxOBEventHandlerMapFromSchemas<TEventSchemas>;
+  },
+): TxOBEventHandlerMapFromSchemas<TEventSchemas> => {
+  const { eventSchemas: _eventSchemas, handlerMap } = opts;
+  return handlerMap;
+};

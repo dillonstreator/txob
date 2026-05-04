@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { MongoClient, ObjectId, type ChangeStream } from "mongodb";
 import type {
+  TxOBEventSchemaMap,
+  TxOBSchemaOutput,
   TxOBEvent,
   TxOBProcessorClient,
   TxOBProcessorClientOpts,
@@ -22,20 +24,44 @@ const createReadyToProcessFilter = (maxErrors: number) => ({
   errors: { $lt: maxErrors },
 });
 
-export type CreateProcessorClientOpts<EventType extends string> = {
+export type CreateProcessorClientOpts<
+  TEventSchemas extends TxOBEventSchemaMap<string>,
+> = {
   mongo: MongoClient;
   db: string;
   collection?: string;
   limit?: number;
+  eventSchemas: TEventSchemas;
 };
 
-export const createProcessorClient = <EventType extends string>(
-  opts: CreateProcessorClientOpts<EventType>,
-): TxOBProcessorClient<EventType> => {
-  const { mongo, db, collection = "events", limit = 100 } = opts;
+export const createProcessorClient = <
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
+>(
+  opts: CreateProcessorClientOpts<TEventSchemas>,
+): TxOBProcessorClient<
+  keyof TEventSchemas & string,
+  {
+    [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
+  }
+> => {
+  const {
+    mongo,
+    db,
+    collection = "events",
+    limit = 100,
+    eventSchemas: _eventSchemas,
+  } = opts;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
-  ): Promise<Pick<TxOBEvent<EventType>, "id" | "errors">[]> => {
+  ): Promise<
+    Pick<
+      TxOBEvent<
+        keyof TEventSchemas & string,
+        TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+      >,
+      "id" | "errors"
+    >[]
+  > => {
     const filter = createReadyToProcessFilter(opts.maxErrors);
 
     const events = (await mongo
@@ -45,23 +71,50 @@ export const createProcessorClient = <EventType extends string>(
       .project({ id: 1, errors: 1 })
       .limit(limit)
       .sort("timestamp", "asc")
-      .toArray()) as Pick<TxOBEvent<EventType>, "id" | "errors">[];
+      .toArray()) as Pick<
+      TxOBEvent<
+        keyof TEventSchemas & string,
+        TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+      >,
+      "id" | "errors"
+    >[];
 
     return events;
   };
 
-  const transaction: TxOBProcessorClient<EventType>["transaction"] = async (
+  const transaction: TxOBProcessorClient<
+    keyof TEventSchemas & string,
+    {
+      [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
+    }
+  >["transaction"] = async (
     fn: (
-      txProcessorClient: TxOBTransactionProcessorClient<EventType>,
+      txProcessorClient: TxOBTransactionProcessorClient<
+        keyof TEventSchemas & string,
+        {
+          [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<
+            TEventSchemas[TType]
+          >;
+        }
+      >,
     ) => Promise<void>,
   ): Promise<void> => {
     await mongo.withSession(async (session): Promise<void> => {
       await session.withTransaction(async (): Promise<void> => {
         await fn({
           getEventByIdForUpdateSkipLocked: async (
-            eventId: TxOBEvent<EventType>["id"],
+            eventId: TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >["id"],
             opts: TxOBProcessorClientOpts,
-          ): Promise<TxOBEvent<EventType> | null> => {
+          ): Promise<
+            | TxOBEvent<
+                keyof TEventSchemas & string,
+                TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+              >
+            | null
+          > => {
             // https://www.mongodb.com/blog/post/how-to-select--for-update-inside-mongodb-transactions
             // Note: findOneAndUpdate returns null (not an error) when document not found,
             // so any thrown error is unexpected and will propagate to the transaction handler
@@ -94,9 +147,17 @@ export const createProcessorClient = <EventType extends string>(
 
             if (!result || !result.value) return null;
 
-            return result.value as TxOBEvent<EventType>;
+            return result.value as TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >;
           },
-          updateEvent: async (event: TxOBEvent<EventType>): Promise<void> => {
+          updateEvent: async (
+            event: TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >,
+          ): Promise<void> => {
             await mongo
               .db(db)
               .collection(collection)
@@ -119,7 +180,13 @@ export const createProcessorClient = <EventType extends string>(
               );
           },
           createEvent: async (
-            event: Omit<TxOBEvent<EventType>, "processed_at" | "backoff_until">,
+            event: Omit<
+              TxOBEvent<
+                keyof TEventSchemas & string,
+                TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+              >,
+              "processed_at" | "backoff_until"
+            >,
           ): Promise<void> => {
             await mongo.db(db).collection(collection).insertOne(
               {

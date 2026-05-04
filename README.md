@@ -130,7 +130,7 @@ const client = new pg.Client({
 await client.connect();
 
 const processor = new EventProcessor({
-  client: createProcessorClient({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: {
     UserCreated: {
       // Handlers are processed concurrently and independently with retries
@@ -301,11 +301,11 @@ For a detailed architecture diagram, see [architecture.mmd](./architecture.mmd).
 Every event in txob follows this structure:
 
 ```typescript
-interface TxOBEvent<EventType extends string> {
+interface TxOBEvent<EventType extends string, EventData = Record<string, unknown>> {
   id: string; // Unique event identifier (UUID recommended)
   timestamp: Date; // When the event was created
   type: EventType; // Event type (e.g., "UserCreated", "OrderPlaced")
-  data: Record<string, unknown>; // Event payload - your custom data
+  data: EventData; // Event payload - can be strongly typed per event type
   correlation_id: string; // For tracing requests across services
   handler_results: Record<string, TxOBEventHandlerResult>; // Results from each handler
   errors: number; // Number of processing attempts
@@ -326,8 +326,11 @@ interface TxOBEvent<EventType extends string> {
 Handlers are async functions that execute your side-effects:
 
 ```typescript
-type TxOBEventHandler = (
-  event: TxOBEvent,
+type TxOBEventHandler<
+  EventType extends string = string,
+  EventData = Record<string, unknown>,
+> = (
+  event: TxOBEvent<EventType, EventData>,
   opts: { signal?: AbortSignal },
 ) => Promise<void>;
 ```
@@ -348,6 +351,57 @@ const incrementCounter: TxOBEventHandler = async (event) => {
   await db.query("UPDATE counters SET count = count + 1"); // Will increment multiple times!
 };
 ```
+
+#### Typed payloads with Standard Schema (Zod/ArkType/Valibot/etc.)
+
+txob uses schema-driven event payload typing through the Standard Schema interface.
+`eventSchemas` is required by both `createProcessorClient(...)` and `createEventProcessor(...)`.
+Use any validator that implements Standard Schema (for example Zod, ArkType, or Valibot).
+
+```typescript
+import { z } from "zod";
+import {
+  createEventHandlerMap,
+  createEventProcessor,
+  type TxOBEventSchemaMap,
+} from "txob";
+import { createProcessorClient } from "txob/pg";
+
+const eventSchemas = {
+  UserCreated: z.object({
+    userId: z.string().uuid(),
+    email: z.string().email(),
+  }),
+  OrderPlaced: z.object({
+    orderId: z.string().uuid(),
+    amount: z.number().positive(),
+  }),
+} satisfies TxOBEventSchemaMap<"UserCreated" | "OrderPlaced">;
+
+const handlerMap = createEventHandlerMap({
+  eventSchemas,
+  handlerMap: {
+    UserCreated: {
+      sendWelcomeEmail: async (event) => {
+        await emailService.send(event.data.email); // typed as string
+      },
+    },
+    OrderPlaced: {
+      sendReceipt: async (event) => {
+        await receipts.send(event.data.orderId, event.data.amount); // strongly typed
+      },
+    },
+  },
+});
+
+const processor = createEventProcessor({
+  eventSchemas,
+  client: createProcessorClient({ querier: client, eventSchemas }),
+  handlerMap,
+});
+```
+
+Schema-first inference via `eventSchemas` is the standard and required approach.
 
 ### Handler Results
 
@@ -792,7 +846,7 @@ await client.connect();
 
 // 3. Create and start the processor
 const processor = new EventProcessor<EventType>({
-  client: createProcessorClient<EventType>({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: {
     UserCreated: {
       sendEmail: async (event, { signal }) => {
@@ -912,7 +966,7 @@ gracefulShutdown(server, {
 
 ```typescript
 const processor = new EventProcessor({
-  client: createProcessorClient({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: {
     UserCreated: {
       sendWelcomeEmail: async (event) => {
@@ -1010,7 +1064,7 @@ const producer = kafka.producer();
 await producer.connect();
 
 const processor = new EventProcessor({
-  client: createProcessorClient({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: {
     UserCreated: {
       // Publish to Kafka with guaranteed consistency
@@ -1067,7 +1121,7 @@ const client = new pg.Client({
 await client.connect();
 
 const processor = new EventProcessor({
-  client: createProcessorClient({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: {
     // All your handlers...
   },
@@ -1140,11 +1194,12 @@ Creates a PostgreSQL processor client.
 ```typescript
 import { createProcessorClient } from "txob/pg";
 
-createProcessorClient<EventType>(opts: {
+createProcessorClient(opts: {
   querier: pg.Client;
+  eventSchemas: Record<string, StandardSchemaV1<unknown, unknown>>;
   table?: string;    // Default: "events"
   limit?: number;   // Default: 100
-}): TxOBProcessorClient<EventType>
+}): TxOBProcessorClient<...inferred from eventSchemas...>
 ```
 
 ### `createProcessorClient` (MongoDB)
@@ -1154,12 +1209,13 @@ Creates a MongoDB processor client.
 ```typescript
 import { createProcessorClient } from "txob/mongodb";
 
-createProcessorClient<EventType>(opts: {
+createProcessorClient(opts: {
   mongo: mongodb.MongoClient;
   db: string;               // Database name
+  eventSchemas: Record<string, StandardSchemaV1<unknown, unknown>>;
   collection?: string;      // Default: "events"
   limit?: number;           // Default: 100
-}): TxOBProcessorClient<EventType>
+}): TxOBProcessorClient<...inferred from eventSchemas...>
 ```
 
 ### `TxOBError`
@@ -1233,11 +1289,11 @@ If the database is not configured for Change Streams, an error will be emitted v
 
 ```typescript
 // Main event type
-type TxOBEvent<EventType extends string> = {
+type TxOBEvent<EventType extends string, EventData = Record<string, unknown>> = {
   id: string;
   timestamp: Date;
   type: EventType;
-  data: Record<string, unknown>;
+  data: EventData;
   correlation_id: string;
   handler_results: Record<string, TxOBEventHandlerResult>;
   errors: number;
@@ -1246,16 +1302,32 @@ type TxOBEvent<EventType extends string> = {
 };
 
 // Handler function signature
-type TxOBEventHandler = (
-  event: TxOBEvent,
+type TxOBEventHandler<
+  EventType extends string = string,
+  EventData = Record<string, unknown>,
+> = (
+  event: TxOBEvent<EventType, EventData>,
   opts: { signal?: AbortSignal },
 ) => Promise<void>;
 
 // Handler map structure
-type TxOBEventHandlerMap<EventType extends string> = Record<
+type TxOBEventDataMap<EventType extends string> = Record<
   EventType,
-  Record<string, TxOBEventHandler>
+  Record<string, unknown>
 >;
+type TxOBEventHandlerMap<
+  EventType extends string,
+  EventDataMap extends TxOBEventDataMap<EventType>,
+> = {
+  [TType in EventType]: Record<string, TxOBEventHandler<TType, EventDataMap[TType]>>;
+};
+
+// Schema-first convenience API
+createEventProcessor({
+  eventSchemas,
+  client: createProcessorClient({ querier, eventSchemas }),
+  handlerMap,
+});
 
 // Handler result tracking
 type TxOBEventHandlerResult = {
@@ -1395,7 +1467,7 @@ If using `FOR UPDATE SKIP LOCKED` properly (which txob does), stuck events are n
 - Lower `maxEventConcurrency`
 - Profile handlers for memory leaks
 - Archive old events
-- Reduce `limit` in `createProcessorClient({ querier: client, table, limit })`
+- Reduce `limit` in `createProcessorClient({ querier: client, eventSchemas, table, limit })`
 
 ### Duplicate handler executions
 
@@ -1700,7 +1772,7 @@ txob can emit spans and metrics without depending on a specific telemetry SDK. I
 import { metrics, trace } from "@opentelemetry/api";
 
 const processor = new EventProcessor({
-  client: createProcessorClient({ querier: client }),
+  client: createProcessorClient({ querier: client, eventSchemas }),
   handlerMap: handlers,
   telemetry: {
     tracer: trace.getTracer("txob"),
@@ -1767,29 +1839,43 @@ onEventMaxErrorsReached: async ({ event, txClient }) => {
 
 ### Can I use this with TypeScript?
 
-Yes! txob is written in TypeScript and provides full type safety:
+Yes! txob is written in TypeScript and provides full type safety, including typed event payloads:
 
 ```typescript
-// Define your event types
-const eventTypes = {
-  UserCreated: "UserCreated",
-  OrderPlaced: "OrderPlaced",
-} as const;
+import { z } from "zod";
+import {
+  createEventHandlerMap,
+  createEventProcessor,
+  type TxOBEventSchemaMap,
+} from "txob";
+import { createProcessorClient } from "txob/pg";
 
-type EventType = keyof typeof eventTypes;
+const eventSchemas = {
+  UserCreated: z.object({ userId: z.string().uuid(), email: z.string().email() }),
+  OrderPlaced: z.object({ orderId: z.string().uuid(), amount: z.number() }),
+} satisfies TxOBEventSchemaMap<"UserCreated" | "OrderPlaced">;
 
-// TypeScript will enforce all event types have handlers
-const processor = new EventProcessor<EventType>({
-  client: createProcessorClient<EventType>({ querier: client }),
+const handlers = createEventHandlerMap({
+  eventSchemas,
   handlerMap: {
     UserCreated: {
-      /* handlers */
+      sendWelcomeEmail: async (event) => {
+        event.data.email; // string
+      },
     },
     OrderPlaced: {
-      /* handlers */
+      sendReceipt: async (event) => {
+        event.data.amount; // number
+      },
     },
-    // Missing an event type? TypeScript error!
+    // Missing an event type? TypeScript error
   },
+});
+
+const processor = createEventProcessor({
+  eventSchemas,
+  client: createProcessorClient({ querier: client, eventSchemas }),
+  handlerMap: handlers,
 });
 ```
 

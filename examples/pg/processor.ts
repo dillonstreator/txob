@@ -1,27 +1,29 @@
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
-  ErrorUnprocessableEventHandler,
-  EventProcessor,
+  createEventHandlerMap,
+  createEventProcessor,
+  type TxOBProcessor,
   WakeupEmitter,
 } from "../../src/index.js";
 import {
   createProcessorClient,
   createWakeupEmitter,
 } from "../../src/pg/client.js";
-import { migrate, type EventType, eventTypes } from "./server.js";
+import { eventSchemas, eventTypes } from "./events.js";
+import { migrate } from "./server.js";
 import dotenv from "dotenv";
 import { sleep } from "../../src/sleep.js";
 dotenv.config();
 
-let processor: EventProcessor<EventType> | undefined = undefined;
+let processor: TxOBProcessor | undefined = undefined;
 let wakeupEmitter: WakeupEmitter | undefined = undefined;
 
 (async () => {
   const clientConfig: pg.ClientConfig = {
-    user: process.env.POSTGRES_USER,
-    password: process.env.POSTGRES_PASSWORD,
-    database: process.env.POSTGRES_DB,
+    user: process.env.POSTGRES_USER || 'outbox',
+    password: process.env.POSTGRES_PASSWORD || 'outbox',
+    database: process.env.POSTGRES_DB || 'outbox',
     port: parseInt(process.env.POSTGRES_PORT || "5434"),
   };
   const client = new pg.Client(clientConfig);
@@ -34,39 +36,55 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
     querier: client,
   });
 
-  processor = new EventProcessor<EventType>({
-    maxEventConcurrency: 50,
-    client: createProcessorClient<EventType>({ querier: client }),
-    wakeupEmitter,
+  const handlerMap = createEventHandlerMap({
+    eventSchemas,
     handlerMap: {
       ResourceSaved: {
         thing1: async (event) => {
-          console.log(`${event.id} thing1 ${event.correlation_id}`);
+          console.log(
+            `${event.id} thing1 ${event.correlation_id} activity=${event.data.id}`,
+          );
           if (Math.random() > 0.99) throw new Error("some issue");
-
-          return;
         },
         thing2: async (event) => {
-          console.log(`${event.id} thing2 ${event.correlation_id}`);
+          console.log(
+            `${event.id} thing2 ${event.correlation_id} kind=${event.data.type}`,
+          );
           if (Math.random() > 0.96) throw new Error("some issue");
-
-          return;
         },
         thing3: async (event) => {
           await sleep(Math.random() * 1_000);
           console.log(`${event.id} thing3 ${event.correlation_id}`);
           if (Math.random() > 0.8) throw new Error("some issue");
-
-          return;
         },
       },
       EventMaxErrorsReached: {
         // Optional: add handlers for EventMaxErrorsReached events if needed
         // For example, you might want to send alerts or log to external systems
+        notify: async (event) => {
+          console.log(
+            "Event max errors reached",
+            event.data.failedEventType,
+            event.data.failedEventId,
+          );
+        },
       },
     },
+  });
+
+  processor = createEventProcessor({
+    eventSchemas,
+    maxEventConcurrency: 50,
+    client: createProcessorClient({ querier: client, eventSchemas }),
+    wakeupEmitter,
+    handlerMap,
     pollingIntervalMs: 5000,
-    logger: console,
+    logger: {
+      info: console.log,
+      error: console.error,
+      warn: console.warn,
+      debug: () => { },
+    },
     onEventMaxErrorsReached: async ({ event, txClient }) => {
       // Transactionally persist an 'event max errors reached' event
       // This hook is called when:
@@ -78,11 +96,11 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
         id: randomUUID(),
         timestamp: new Date(),
         type: eventTypes.EventMaxErrorsReached,
-        data: {
+        data: eventSchemas.EventMaxErrorsReached.parse({
           failedEventId: event.id,
           failedEventType: event.type,
           failedEventCorrelationId: event.correlation_id,
-        },
+        }),
         correlation_id: event.correlation_id,
         handler_results: {},
         errors: 0,
@@ -104,6 +122,7 @@ const shutdown = (() => {
     shutdownStarted = true;
 
     try {
+      await processor?.stop();
       await wakeupEmitter?.close();
     } catch (err) {
       console.error(err);
