@@ -1,20 +1,20 @@
 <h1 align="center">txob</h1>
 <p align="center">Reliably process side-effects in your Node.js applications without data loss</p>
 <p align="center">
-  <a href="https://codecov.io/gh/dillonstreator/txob" >
-    <img src="https://codecov.io/gh/dillonstreator/txob/graph/badge.svg?token=E9M7G67VLL"/>
+  <a href="https://codecov.io/gh/osbytes/txob" >
+    <img src="https://codecov.io/gh/osbytes/txob/graph/badge.svg?token=E9M7G67VLL"/>
   </a>
   <a aria-label="NPM version" href="https://www.npmjs.com/package/txob">
     <img alt="" src="https://badgen.net/npm/v/txob?v=0.3.1">
   </a>
-  <a aria-label="License" href="https://github.com/dillonstreator/txob/blob/main/LICENSE">
+  <a aria-label="License" href="https://github.com/osbytes/txob/blob/main/LICENSE">
     <img alt="" src="https://badgen.net/npm/license/txob">
   </a>
-  <a aria-label="Typescript" href="https://github.com/dillonstreator/txob/blob/main/src/cache.ts">
+  <a aria-label="Typescript" href="https://github.com/osbytes/txob/blob/main/src/cache.ts">
     <img alt="" src="https://badgen.net/npm/types/txob">
   </a>
-  <a aria-label="CodeFactor" href="https://www.codefactor.io/repository/github/dillonstreator/txob">
-    <img alt="" src="https://www.codefactor.io/repository/github/dillonstreator/txob/badge">
+  <a aria-label="CodeFactor" href="https://www.codefactor.io/repository/github/osbytes/txob">
+    <img alt="" src="https://www.codefactor.io/repository/github/osbytes/txob/badge">
   </a>
 </p>
 
