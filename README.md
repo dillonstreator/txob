@@ -1937,7 +1937,7 @@ See the [examples](./examples) directory for complete working examples:
 ## Support & Community
 
 - 📖 **Documentation:** You're reading it!
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/dillonstreator/txob/issues)
+- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/osbytes/txob/issues)
 
 ## Learn More
 

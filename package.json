@@ -13,10 +13,10 @@
     "at-least-once delivery"
   ],
   "author": "Dillon Streator <dillonstreator@gmail.com>",
-  "homepage": "https://github.com/dillonstreator/txob",
+  "homepage": "https://github.com/osbytes/txob",
   "repository": {
     "type": "git",
-    "url": "git://github.com/dillonstreator/txob.git"
+    "url": "git://github.com/osbytes/txob.git"
   },
   "version": "0.3.0",
   "type": "module",
