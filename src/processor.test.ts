@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, afterEach, expectTypeOf } from "vitest";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import {
-  defineTxOBEventHandlerMap,
-  defineTxOBEventSchemas,
+  createEventHandlerMap,
   EventProcessor,
   TxOBEvent,
   defaultBackoff,
@@ -53,31 +52,34 @@ describe("EventProcessor - schema typing", () => {
       },
     });
 
-    const eventSchemas = defineTxOBEventSchemas({
+    const eventSchemas = {
       UserCreated: createSchema<{ userId: string; email: string }>(),
       SubscriptionCancelled: createSchema<{
         subscriptionId: string;
         reason?: string;
       }>(),
-    });
+    };
 
-    const handlerMap = defineTxOBEventHandlerMap(eventSchemas, {
-      UserCreated: {
-        sendWelcomeEmail: async (event) => {
-          expectTypeOf(event.type).toEqualTypeOf<"UserCreated">();
-          expectTypeOf(event.data).toEqualTypeOf<{
-            userId: string;
-            email: string;
-          }>();
+    const handlerMap = createEventHandlerMap({
+      eventSchemas,
+      handlerMap: {
+        UserCreated: {
+          sendWelcomeEmail: async (event) => {
+            expectTypeOf(event.type).toEqualTypeOf<"UserCreated">();
+            expectTypeOf(event.data).toEqualTypeOf<{
+              userId: string;
+              email: string;
+            }>();
+          },
         },
-      },
-      SubscriptionCancelled: {
-        syncBilling: async (event) => {
-          expectTypeOf(event.type).toEqualTypeOf<"SubscriptionCancelled">();
-          expectTypeOf(event.data).toEqualTypeOf<{
-            subscriptionId: string;
-            reason?: string;
-          }>();
+        SubscriptionCancelled: {
+          syncBilling: async (event) => {
+            expectTypeOf(event.type).toEqualTypeOf<"SubscriptionCancelled">();
+            expectTypeOf(event.data).toEqualTypeOf<{
+              subscriptionId: string;
+              reason?: string;
+            }>();
+          },
         },
       },
     });

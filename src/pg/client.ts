@@ -5,7 +5,8 @@ import {
   type ClientConfig,
 } from "pg";
 import type {
-  TxOBEventDataMap,
+  TxOBEventSchemaMap,
+  TxOBSchemaOutput,
   TxOBEvent,
   TxOBProcessorClient,
   TxOBProcessorClientOpts,
@@ -22,30 +23,47 @@ interface Querier {
 // to cancel queries if/when supported by `pg` https://github.com/brianc/node-postgres/issues/2774
 
 export type CreateProcessorClientOpts<
-  EventType extends string,
-  TEventDataMap extends TxOBEventDataMap<EventType> = TxOBEventDataMap<EventType>,
+  TEventSchemas extends TxOBEventSchemaMap<string>,
 > = {
   querier: Querier;
   table?: string;
   limit?: number;
+  eventSchemas: TEventSchemas;
 };
 
 export const createProcessorClient = <
-  EventType extends string,
-  TEventDataMap extends TxOBEventDataMap<EventType> = TxOBEventDataMap<EventType>,
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
 >(
-  opts: CreateProcessorClientOpts<EventType, TEventDataMap>,
-): TxOBProcessorClient<EventType, TEventDataMap> => {
-  const { querier, table = "events", limit = 100 } = opts;
+  opts: CreateProcessorClientOpts<TEventSchemas>,
+): TxOBProcessorClient<
+  keyof TEventSchemas & string,
+  {
+    [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
+  }
+> => {
+  const { querier, table = "events", limit = 100, eventSchemas: _eventSchemas } =
+    opts;
   const _table = table;
   const _limit = limit;
   const getEventsToProcess = async (
     opts: TxOBProcessorClientOpts,
   ): Promise<
-    Pick<TxOBEvent<EventType, TEventDataMap[EventType]>, "id" | "errors">[]
+    Pick<
+      TxOBEvent<
+        keyof TEventSchemas & string,
+        TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+      >,
+      "id" | "errors"
+    >[]
   > => {
     const events = await querier.query<
-      Pick<TxOBEvent<EventType, TEventDataMap[EventType]>, "id" | "errors">
+      Pick<
+        TxOBEvent<
+          keyof TEventSchemas & string,
+          TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+        >,
+        "id" | "errors"
+      >
     >(
       `SELECT id, errors FROM ${escapeIdentifier(_table)} WHERE processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $1 ORDER BY timestamp ASC LIMIT ${_limit}`,
       [opts.maxErrors],
@@ -53,20 +71,44 @@ export const createProcessorClient = <
     return events.rows;
   };
 
-  const transaction: TxOBProcessorClient<EventType, TEventDataMap>["transaction"] = async (
+  const transaction: TxOBProcessorClient<
+    keyof TEventSchemas & string,
+    {
+      [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
+    }
+  >["transaction"] = async (
     fn: (
-      txProcessorClient: TxOBTransactionProcessorClient<EventType, TEventDataMap>,
+      txProcessorClient: TxOBTransactionProcessorClient<
+        keyof TEventSchemas & string,
+        {
+          [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<
+            TEventSchemas[TType]
+          >;
+        }
+      >,
     ) => Promise<void>,
   ): Promise<void> => {
     try {
       await querier.query("BEGIN");
       await fn({
         getEventByIdForUpdateSkipLocked: async (
-          eventId: TxOBEvent<EventType, TEventDataMap[EventType]>["id"],
+          eventId: TxOBEvent<
+            keyof TEventSchemas & string,
+            TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+          >["id"],
           opts: TxOBProcessorClientOpts,
-        ): Promise<TxOBEvent<EventType, TEventDataMap[EventType]> | null> => {
+        ): Promise<
+          | TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >
+          | null
+        > => {
           const event = await querier.query<
-            TxOBEvent<EventType, TEventDataMap[EventType]>
+            TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >
           >(
             `SELECT id, timestamp, type, data, correlation_id, handler_results, errors, backoff_until, processed_at FROM ${escapeIdentifier(_table)} WHERE id = $1 AND processed_at IS NULL AND (backoff_until IS NULL OR backoff_until < NOW()) AND errors < $2 FOR UPDATE SKIP LOCKED`,
             [eventId, opts.maxErrors],
@@ -78,7 +120,10 @@ export const createProcessorClient = <
           return event.rows[0];
         },
         updateEvent: async (
-          event: TxOBEvent<EventType, TEventDataMap[EventType]>,
+          event: TxOBEvent<
+            keyof TEventSchemas & string,
+            TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+          >,
         ): Promise<void> => {
           await querier.query(
             `UPDATE ${escapeIdentifier(_table)} SET handler_results = $1, errors = $2, processed_at = $3, backoff_until = $4 WHERE id = $5`,
@@ -93,7 +138,10 @@ export const createProcessorClient = <
         },
         createEvent: async (
           event: Omit<
-            TxOBEvent<EventType, TEventDataMap[EventType]>,
+            TxOBEvent<
+              keyof TEventSchemas & string,
+              TxOBSchemaOutput<TEventSchemas[keyof TEventSchemas & string]>
+            >,
             "processed_at" | "backoff_until"
           >,
         ): Promise<void> => {

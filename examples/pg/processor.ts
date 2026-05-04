@@ -1,24 +1,22 @@
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
-  defineTxOBEventHandlerMap,
-  EventProcessor,
-  type TxOBEventDataMapFromSchemas,
+  createEventHandlerMap,
+  createEventProcessor,
+  type TxOBProcessor,
   WakeupEmitter,
 } from "../../src/index.js";
 import {
   createProcessorClient,
   createWakeupEmitter,
 } from "../../src/pg/client.js";
-import { eventSchemas, eventTypes, type EventType } from "./events.js";
+import { eventSchemas, eventTypes } from "./events.js";
 import { migrate } from "./server.js";
 import dotenv from "dotenv";
 import { sleep } from "../../src/sleep.js";
 dotenv.config();
 
-type EventDataMap = TxOBEventDataMapFromSchemas<typeof eventSchemas>;
-
-let processor: EventProcessor<EventType, EventDataMap> | undefined = undefined;
+let processor: TxOBProcessor | undefined = undefined;
 let wakeupEmitter: WakeupEmitter | undefined = undefined;
 
 (async () => {
@@ -38,46 +36,55 @@ let wakeupEmitter: WakeupEmitter | undefined = undefined;
     querier: client,
   });
 
-  const handlerMap = defineTxOBEventHandlerMap(eventSchemas, {
-    ResourceSaved: {
-      thing1: async (event) => {
-        console.log(
-          `${event.id} thing1 ${event.correlation_id} activity=${event.data.id}`,
-        );
-        if (Math.random() > 0.99) throw new Error("some issue");
+  const handlerMap = createEventHandlerMap({
+    eventSchemas,
+    handlerMap: {
+      ResourceSaved: {
+        thing1: async (event) => {
+          console.log(
+            `${event.id} thing1 ${event.correlation_id} activity=${event.data.id}`,
+          );
+          if (Math.random() > 0.99) throw new Error("some issue");
+        },
+        thing2: async (event) => {
+          console.log(
+            `${event.id} thing2 ${event.correlation_id} kind=${event.data.type}`,
+          );
+          if (Math.random() > 0.96) throw new Error("some issue");
+        },
+        thing3: async (event) => {
+          await sleep(Math.random() * 1_000);
+          console.log(`${event.id} thing3 ${event.correlation_id}`);
+          if (Math.random() > 0.8) throw new Error("some issue");
+        },
       },
-      thing2: async (event) => {
-        console.log(
-          `${event.id} thing2 ${event.correlation_id} kind=${event.data.type}`,
-        );
-        if (Math.random() > 0.96) throw new Error("some issue");
-      },
-      thing3: async (event) => {
-        await sleep(Math.random() * 1_000);
-        console.log(`${event.id} thing3 ${event.correlation_id}`);
-        if (Math.random() > 0.8) throw new Error("some issue");
-      },
-    },
-    EventMaxErrorsReached: {
-      // Optional: add handlers for EventMaxErrorsReached events if needed
-      // For example, you might want to send alerts or log to external systems
-      notify: async (event) => {
-        console.log(
-          "Event max errors reached",
-          event.data.failedEventType,
-          event.data.failedEventId,
-        );
+      EventMaxErrorsReached: {
+        // Optional: add handlers for EventMaxErrorsReached events if needed
+        // For example, you might want to send alerts or log to external systems
+        notify: async (event) => {
+          console.log(
+            "Event max errors reached",
+            event.data.failedEventType,
+            event.data.failedEventId,
+          );
+        },
       },
     },
   });
 
-  processor = new EventProcessor<EventType, EventDataMap>({
+  processor = createEventProcessor({
+    eventSchemas,
     maxEventConcurrency: 50,
-    client: createProcessorClient<EventType, EventDataMap>({ querier: client }),
+    client: createProcessorClient({ querier: client, eventSchemas }),
     wakeupEmitter,
     handlerMap,
     pollingIntervalMs: 5000,
-    logger: console,
+    logger: {
+      info: console.log,
+      error: console.error,
+      warn: console.warn,
+      debug: () => { },
+    },
     onEventMaxErrorsReached: async ({ event, txClient }) => {
       // Transactionally persist an 'event max errors reached' event
       // This hook is called when:
@@ -115,6 +122,7 @@ const shutdown = (() => {
     shutdownStarted = true;
 
     try {
+      await processor?.stop();
       await wakeupEmitter?.close();
     } catch (err) {
       console.error(err);

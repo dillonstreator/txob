@@ -1,25 +1,21 @@
 import { z } from "zod";
-import {
-  defineTxOBEventSchemas,
-  type TxOBEventDataMapFromSchemas,
-} from "../../src/index.js";
+import type { TxOBEventSchemaMap } from "../../src/index.js";
 
 export const eventTypes = {
   ResourceSaved: "ResourceSaved",
   EventMaxErrorsReached: "EventMaxErrorsReached",
 } as const;
 
-export const eventSchemas = defineTxOBEventSchemas({
+export type EventType = keyof typeof eventTypes;
+
+export const eventSchemas = {
   [eventTypes.ResourceSaved]: z.object({
     type: z.literal("activity"),
-    id: z.string().uuid(),
+    id: z.uuid(),
   }),
   [eventTypes.EventMaxErrorsReached]: z.object({
-    failedEventId: z.string().uuid(),
+    failedEventId: z.uuid(),
     failedEventType: z.string(),
-    failedEventCorrelationId: z.string().uuid(),
+    failedEventCorrelationId: z.uuid(),
   }),
-});
-
-export type EventType = keyof typeof eventSchemas;
-export type EventDataMap = TxOBEventDataMapFromSchemas<typeof eventSchemas>;
+} satisfies TxOBEventSchemaMap<EventType>;

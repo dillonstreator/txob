@@ -1,12 +1,27 @@
 import { vi, describe, it, expect } from "vitest";
 import { createProcessorClient } from "./client.js";
 
+const eventSchemas = {
+  TestEvent: {
+    "~standard": {
+      version: 1 as const,
+      vendor: "test",
+      validate: (value: unknown) => ({
+        value:
+          typeof value === "object" && value !== null
+            ? (value as Record<string, unknown>)
+            : {},
+      }),
+    },
+  },
+};
+
 describe("createProcessorClient", () => {
   it("should create a client with the correct functions", async () => {
     const pgClient = {
       query: vi.fn(),
     } as any;
-    const client = createProcessorClient({ querier: pgClient });
+    const client = createProcessorClient({ querier: pgClient, eventSchemas });
     expect(typeof client.getEventsToProcess).toBe("function");
     expect(typeof client.transaction).toBe("function");
   });
@@ -25,7 +40,7 @@ describe("getEventsToProcess", () => {
     const opts = {
       maxErrors: 10,
     };
-    const client = createProcessorClient({ querier: pgClient });
+    const client = createProcessorClient({ querier: pgClient, eventSchemas });
     const result = await client.getEventsToProcess(opts);
     expect(pgClient.query).toHaveBeenCalledOnce();
     expect(pgClient.query).toHaveBeenCalledWith(
@@ -41,7 +56,7 @@ describe("transaction", () => {
     const pgClient = {
       query: vi.fn<any>(() => Promise.resolve()),
     } as any;
-    const client = createProcessorClient({ querier: pgClient });
+    const client = createProcessorClient({ querier: pgClient, eventSchemas });
     await client.transaction(async () => {});
     expect(pgClient.query).toHaveBeenCalledTimes(2);
     expect(pgClient.query).toHaveBeenNthCalledWith(1, "BEGIN");
@@ -51,7 +66,7 @@ describe("transaction", () => {
     const pgClient = {
       query: vi.fn<any>(() => Promise.resolve()),
     } as any;
-    const client = createProcessorClient({ querier: pgClient });
+    const client = createProcessorClient({ querier: pgClient, eventSchemas });
     await client
       .transaction(async () => {
         throw new Error("error");
@@ -74,7 +89,7 @@ describe("transaction", () => {
         ),
       } as any;
       const eventId = "123";
-      const client = createProcessorClient({ querier: pgClient });
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
       let result: any;
       await client.transaction(async (txClient) => {
         result = await txClient.getEventByIdForUpdateSkipLocked(eventId, {
@@ -101,7 +116,7 @@ describe("transaction", () => {
         ),
       } as any;
       const eventId = "123";
-      const client = createProcessorClient({ querier: pgClient });
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
       let result: any;
       await client.transaction(async (txClient) => {
         result = await txClient.getEventByIdForUpdateSkipLocked(eventId, {
@@ -135,13 +150,13 @@ describe("transaction", () => {
         processed_at: new Date(),
         backoff_until: new Date(),
         timestamp: new Date(),
-        type: "type",
+        type: "TestEvent" as const,
         data: {
           thing1: "something",
         },
         correlation_id: "abc123",
       };
-      const client = createProcessorClient({ querier: pgClient });
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
       await client.transaction(async (txClient) => {
         await txClient.updateEvent(event);
       });
@@ -168,7 +183,7 @@ describe("transaction", () => {
       const event = {
         id: "1",
         timestamp: new Date(),
-        type: "test_event",
+        type: "TestEvent" as const,
         data: {
           thing1: "something",
         },
@@ -176,7 +191,7 @@ describe("transaction", () => {
         handler_results: {},
         errors: 0,
       };
-      const client = createProcessorClient({ querier: pgClient });
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
       await client.transaction(async (txClient) => {
         await txClient.createEvent(event);
       });
@@ -219,7 +234,7 @@ describe("transaction", () => {
         }),
       } as any;
 
-      const client = createProcessorClient({ querier: pgClient });
+      const client = createProcessorClient({ querier: pgClient, eventSchemas });
 
       try {
         await client.transaction(async () => {

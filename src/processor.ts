@@ -66,24 +66,21 @@ export type TxOBEventSchemaMap<TxOBEventType extends string> = Record<
 export type TxOBSchemaOutput<TSchema extends TxOBStandardSchema> =
   TSchema extends StandardSchemaV1<unknown, infer TOutput> ? TOutput : never;
 
-export type TxOBEventDataMapFromSchemas<
+type TxOBEventDataMapFromSchemas<
   TEventSchemas extends TxOBEventSchemaMap<string>,
 > = {
   [TType in keyof TEventSchemas & string]: TxOBSchemaOutput<TEventSchemas[TType]>;
 };
 
-export type TxOBEventHandlerMapFromSchemas<
+type TxOBEventHandlerMapFromSchemas<
   TEventSchemas extends TxOBEventSchemaMap<string>,
 > = TxOBEventHandlerMap<
   keyof TEventSchemas & string,
   TxOBEventDataMapFromSchemas<TEventSchemas>
 >;
 
-export const defineTxOBEventSchemas = <
-  const TEventSchemas extends TxOBEventSchemaMap<string>,
->(
-  eventSchemas: TEventSchemas,
-): TEventSchemas => eventSchemas;
+type TxOBEventTypeFromSchemas<TEventSchemas extends TxOBEventSchemaMap<string>> =
+  keyof TEventSchemas & string;
 
 type TxOBEventHandlerOpts = {
   signal?: AbortSignal;
@@ -106,12 +103,29 @@ export type TxOBEventHandlerMap<
   };
 };
 
-export const defineTxOBEventHandlerMap = <
-  const TEventSchemas extends TxOBEventSchemaMap<string>,
->(
-  _eventSchemas: TEventSchemas,
-  handlerMap: TxOBEventHandlerMapFromSchemas<TEventSchemas>,
-): TxOBEventHandlerMapFromSchemas<TEventSchemas> => handlerMap;
+export type CreateEventProcessorOptsFromSchemas<
+  TEventSchemas extends TxOBEventSchemaMap<string>,
+> = Omit<
+  Partial<
+    TxOBProcessEventsOpts<
+      TxOBEventTypeFromSchemas<TEventSchemas>,
+      TxOBEventDataMapFromSchemas<TEventSchemas>
+    >
+  >,
+  "signal" | "telemetry"
+> & {
+  pollingIntervalMs?: number;
+  wakeupTimeoutMs?: number;
+  wakeupThrottleMs?: number;
+  wakeupEmitter?: WakeupEmitter;
+  telemetry?: TxOBTelemetry;
+  eventSchemas: TEventSchemas;
+  client: TxOBProcessorClient<
+    TxOBEventTypeFromSchemas<TEventSchemas>,
+    TxOBEventDataMapFromSchemas<TEventSchemas>
+  >;
+  handlerMap: TxOBEventHandlerMapFromSchemas<TEventSchemas>;
+};
 
 export type TxOBProcessorClientOpts = {
   signal?: AbortSignal;
@@ -579,10 +593,15 @@ export interface Logger {
   error(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
+export interface TxOBProcessor {
+  start(): void;
+  stop(opts?: { timeoutMs?: number }): Promise<void>;
+}
+
 export class EventProcessor<
   TxOBEventType extends string,
   TEventDataMap extends TxOBEventDataMap<TxOBEventType> = TxOBEventDataMap<TxOBEventType>,
-> {
+> implements TxOBProcessor {
   private client: TxOBProcessorClient<TxOBEventType, TEventDataMap>;
   private handlerMap: TxOBEventHandlerMap<TxOBEventType, TEventDataMap>;
   private opts: Omit<TxOBProcessEventsOpts<TxOBEventType, TEventDataMap>, "signal"> & {
@@ -939,3 +958,27 @@ export class EventProcessor<
     }
   }
 }
+
+export const createEventProcessor = <
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
+>(
+  opts: CreateEventProcessorOptsFromSchemas<TEventSchemas>,
+): EventProcessor<
+  TxOBEventTypeFromSchemas<TEventSchemas>,
+  TxOBEventDataMapFromSchemas<TEventSchemas>
+> => {
+  const { eventSchemas: _eventSchemas, ...processorOpts } = opts;
+  return new EventProcessor(processorOpts);
+};
+
+export const createEventHandlerMap = <
+  const TEventSchemas extends TxOBEventSchemaMap<string>,
+>(
+  opts: {
+    eventSchemas: TEventSchemas;
+    handlerMap: TxOBEventHandlerMapFromSchemas<TEventSchemas>;
+  },
+): TxOBEventHandlerMapFromSchemas<TEventSchemas> => {
+  const { eventSchemas: _eventSchemas, handlerMap } = opts;
+  return handlerMap;
+};
